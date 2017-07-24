@@ -99,6 +99,7 @@ def display(interval=500.0):
             worker_progress[worker['status']] += 1
         sys.stdout.write("\r\033[H\033[J")
         sys.stdout.flush()
+        sys.stdout.write("Remote URL: {}\n".format(rsync_src))
         sys.stdout.write("{} seconds elapsed.\n".format(int(time.time()-tic)))
         sys.stdout.write("Workers ({} in total): {} idle, {} working, {} dismissed.\n".format(
             nthreads,
@@ -115,7 +116,7 @@ def display(interval=500.0):
             job_progress['completed']
         ))
         for worker in workers_pool:
-            sys.stdout.write("--------------------------------\n")
+            sys.stdout.write("\n--------------------------------\n")
             sys.stdout.write("Worker {} last output:\n".format(worker['id']))
             sys.stdout.write('\n'.join(worker['output'][-5:]))
         sys.stdout.flush()
@@ -214,3 +215,4 @@ dispatcher.join()
 for i in range(nthreads):
     workers_pool[i]['status'] = 'dismissed'
     workers[i].join()
+print '\nTerminated.'
