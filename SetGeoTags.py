@@ -28,8 +28,8 @@ def dd2dms(dd):
     return deg, mnt, sec
 
 try:
-    lon_str  = sys.argv[1]
-    lat_str  = sys.argv[2]
+    lat_str  = sys.argv[1]
+    lon_str  = sys.argv[2]
     alt_str  = sys.argv[3]
     filename = sys.argv[4]
 except:

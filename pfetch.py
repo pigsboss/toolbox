@@ -2,7 +2,7 @@
 """Fetch remote directories through rsync with parallelism and auto-retry.
 
 Syntax:
-fetch.py RSYNC_OPTS SRC LIST DEST
+pfetch.py RSYNC_OPTS SRC LIST DEST
 
 RSYNC_OPTS is the options for rsync.
 SRC        is the URL of the remote parant path of all required directories.
@@ -115,7 +115,8 @@ def display(interval=500.0):
             job_progress['completed']
         ))
         for worker in workers_pool:
-            sys.stdout.write("\nWorker {} latest output:\n".format(worker['id']))
+            sys.stdout.write("--------------------------------\n")
+            sys.stdout.write("Worker {} last output:\n".format(worker['id']))
             sys.stdout.write('\n'.join(worker['output'][-5:]))
         sys.stdout.flush()
         time.sleep(interval/1000.0)

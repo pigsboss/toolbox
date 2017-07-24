@@ -2,6 +2,16 @@
 
 My homemade automation toolbox.
 
+## pfetch
+
+RSYNC with multi-threads parallelism and auto-retry.
+
+### Examples:
+```bash
+$ python pfetch.py -azu user@server:/path fetch_list ./
+```
+
+
 ## GeoTag
 
 Get/Set geotags (GPS tags in EXIF) of photos. Requires piexif and PIL (pillow).
