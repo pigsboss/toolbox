@@ -8,6 +8,9 @@ RSYNC_OPTS is the options for rsync.
 SRC        is the URL of the remote parant path of all required directories.
 LIST       is a local text file which contains all required directories.
 DEST       is a local path which is the new parent path of required directories.
+
+Author: pigsboss@github
+2017-07-24
 """
 ## rsync error codes:
 ##
