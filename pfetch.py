@@ -147,16 +147,19 @@ def rsync(worker_id, interval=10.0):
     while worker['status'] != 'dismissed':
         job = jobs_pool[i % njobs]
         if job['worker'] == worker_id:
-#            worker['output'].append('Job %d is dispatched to me.'%job['id'])
             if job['status'] == 'pending':
                 worker['output'].append('Job %d is pending.'%job['id'])
                 worker['status'] = 'working'
                 try:
                     job['status'] = 'syncing'
+                    worker['output'].append('Job %d is syncing.'%job['id'])
                     output = subprocess.check_output(job['command'])
                     worker['output'] += output.split('\n')
                     job['status'] = 'completed'
                     job['return'] = 0
+                    worker['output'].append('Job %d is completed.'%job['id'])
+                    with open('pfetch.job_%d.log'%job['id'], 'w') as f:
+                        f.write(output)
                 except subprocess.CalledProcessError, e:
                     worker['output'] += e.output.split('\n')
                     job['return'] = e.returncode
@@ -170,6 +173,8 @@ def rsync(worker_id, interval=10.0):
                         else:
                             worker['output'].append('Job %d encounters unknown error. We give up.'%job['id'])
                             job['status'] = 'failed'
+                            with open('pfetch.job_%d.log'%job['id'], 'w') as f:
+                                f.write(e.output)
                 worker['status'] = 'idle'
             elif job['status'] == 'syncing':
                 worker['output'].append('Conflict! Job %d is syncing.'%job['id'])
@@ -193,6 +198,8 @@ def rsync(worker_id, interval=10.0):
                 raise StandardError('Status %s is undefined.'%job['status'])
         time.sleep(interval/1000.0)
         i += 1
+    with open('pfetch.worker_%d.log'%worker_id, 'w') as f:
+        f.write('\n'.join(worker['output']))
 
 displayer = Thread(target=display)
 displayer.start()
