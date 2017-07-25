@@ -1,4 +1,13 @@
-#!/usr/bin/python2.7
+#!/usr/bin/env python2
+"""Generate random string as password.
+
+Syntax:
+genpasswd.py LENGTH
+
+LENGTH is the required length of the random string.
+
+Author: pigsboss@github
+"""
 import numpy as np
 import sys
 
