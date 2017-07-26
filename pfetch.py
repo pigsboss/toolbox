@@ -163,22 +163,16 @@ def rsync(worker_id, interval=10.0):
                 except subprocess.CalledProcessError, e:
                     worker['output'] += e.output.split('\n')
                     job['return'] = e.returncode
-                    if job['return'] in (range(20) + range(21,30)):
+                    if job['return'] < 20:
                         worker['output'].append('Job %d encounters fatal error (code: %d).'%(job['id'], job['return']))
                         job['status'] = 'failed'
                         with open('fetch_failed.job_%d.log'%job['id'], 'w') as f:
                             f.write(e.output)
                     else:
-                        if 'Broken pipe' in e.output:
-                            worker['output'].append('Job %d is broken. We will retry it later.'%job['id'])
-                            job['status'] = 'broken'
-                            with open('fetch_broken.job_%d.try_%d.log'%job['id'], retry-job['retry'], 'w') as f:
-                                f.write(e.output)
-                        else:
-                            worker['output'].append('Job %d encounters unknown error. We give up.'%job['id'])
-                            job['status'] = 'failed'
-                            with open('fetch_failed.job_%d.log'%job['id'], 'w') as f:
-                                f.write(e.output)
+                        worker['output'].append('Job %d is broken (code: %d). We will retry it later.'%(job['id'], job['return']))
+                        job['status'] = 'broken'
+                        with open('fetch_broken.job_%d.try_%d.log'%job['id'], retry-job['retry'], 'w') as f:
+                            f.write(e.output)
                 worker['status'] = 'idle'
             elif job['status'] == 'syncing':
                 worker['output'].append('Conflict! Job %d is syncing.'%job['id'])
@@ -191,7 +185,7 @@ def rsync(worker_id, interval=10.0):
                     job['retry'] -= 1
                     job['status'] = 'pending'
                 else:
-                    worker['output'].append('Job %d is failed because it does not have retry left.')
+                    worker['output'].append('Job %d is failed since we give up after %d retries.'%retry)
                     job['status'] = 'failed'
                 worker['status'] = 'idle'
             elif job['status'] == 'failed':
