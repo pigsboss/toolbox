@@ -47,6 +47,15 @@ retry    = 100
 dispatch_on = True
 display_on = True
 
+def mkdir_p(path):
+    try:
+        os.makedirs(path)
+        print 'create directory {}'.format(path)
+    except OSError as exc:  # Python >2.5
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
 try:
     rsync_opts = sys.argv[1]
     rsync_src  = sys.argv[2]
@@ -66,7 +75,8 @@ jobs_pool = []
 for i in range(len(fetch_list)):
     job = {}
     job['id']        = i
-    job['command']   = ['rsync', rsync_opts, path.join(rsync_src, fetch_list[i]), rsync_dest]
+    mkdir_p(path.join(rsync_dest, fetch_list[i]))
+    job['command']   = ['rsync', rsync_opts, path.join(rsync_src, fetch_list[i], ""), path.join(rsync_dest, fetch_list[i], "")]
     job['status']    = 'pending'
     job['return']    = None
     job['output']    = ''
