@@ -42,6 +42,8 @@ from threading import Thread
 from os import path
 import os,sys,subprocess,time
 import numpy as np
+import errno
+
 nthreads = 4
 retry    = 100
 dispatch_on = True
