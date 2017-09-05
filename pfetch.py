@@ -183,7 +183,7 @@ def rsync(worker_id, interval=10.0):
                     else:
                         worker['output'].append('Job %d is broken (code: %d). We will retry it later.'%(job['id'], job['return']))
                         job['status'] = 'broken'
-                        with open('fetch_broken.job_%d.try_%d.log'%job['id'], retry-job['retry'], 'w') as f:
+                        with open('fetch_broken.job_%d.try_%d.log'%job['id'], 'w') as f:
                             f.write(e.output)
                 worker['status'] = 'idle'
             elif job['status'] == 'syncing':
