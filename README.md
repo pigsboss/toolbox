@@ -8,9 +8,7 @@ Copy GeoTags from reference photos.
 ```bash
 CopyGeoTags.py reference target [method]
 ```
-reference - reference photo(s). Single file or directory.
-target    - photo(s) that need GeoTags. Single file or directory.
-method    - optional. Interpolation method, e.g., nearest, linear, cubic.
+`reference` is reference photo(s) (single file or directory), e.g., photos shot with your smartphone. `target`  is photo(s) that require GeoTags, e.g., photos shot with your DSLR. `method` indicates the interpolation method, e.g., nearest, linear, cubic, which is optional (Default: LINEAR).
 
 ## pfetch
 
