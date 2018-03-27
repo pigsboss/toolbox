@@ -2,6 +2,16 @@
 
 My homemade automation toolbox.
 
+## CopyGeoTags
+Copy GeoTags from reference photos.
+### Syntax:
+```bash
+CopyGeoTags.py reference target [method]
+```
+reference - reference photo(s). Single file or directory.
+target    - photo(s) that need GeoTags. Single file or directory.
+method    - optional. Interpolation method, e.g., nearest, linear, cubic.
+
 ## pfetch
 
 RSYNC with multi-threads parallelism and auto-retry.
