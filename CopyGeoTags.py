@@ -69,7 +69,7 @@ def geotag2xyzt(geotag):
         x = np.cos(lon)*np.cos(lat)*(R+alt)
         y = np.sin(lon)*np.cos(lat)*(R+alt)
         z = np.sin(lat)*(R+alt)
-        t = HH[0]*3600.0/HH[1] + MM[0]*60.0/MM[1] + SS[0]*1.0/SS[0] + (
+        t = HH[0]*3600.0/HH[1] + MM[0]*60.0/MM[1] + SS[0]*1.0/SS[1] + (
             datetime.strptime(geotag[0x001d],r'%Y:%m:%d')-datetime(1970,1,1,0,0,0)
         ).total_seconds()
         return x,y,z,t
