@@ -183,7 +183,7 @@ def rsync(worker_id, interval=10.0):
                     else:
                         worker['output'].append('Job %d is broken (code: %d). We will retry it later.'%(job['id'], job['return']))
                         job['status'] = 'broken'
-                        with open('fetch_broken.job_%d.try_%d.log'%job['id'], 'w') as f:
+                        with open('fetch_broken.job_%d.try_%d.log'%(job['id'], retry-job['retry']), 'w') as f:
                             f.write(e.output)
                 worker['status'] = 'idle'
             elif job['status'] == 'syncing':
@@ -208,6 +208,7 @@ def rsync(worker_id, interval=10.0):
                 raise StandardError('Status %s is undefined.'%job['status'])
         time.sleep(interval/1000.0)
         i += 1
+#        print i
     with open('pfetch.worker_%d.log'%worker_id, 'w') as f:
         f.write('\n'.join(worker['output']))
 
