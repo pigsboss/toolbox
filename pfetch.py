@@ -197,7 +197,7 @@ def rsync(worker_id, interval=10.0):
                     job['retry'] -= 1
                     job['status'] = 'pending'
                 else:
-                    worker['output'].append('Job %d is failed since we give up after %d retries.'%retry)
+                    worker['output'].append('Job %d is failed since we give up after %d retries.'%(job['id'], retry))
                     job['status'] = 'failed'
                 worker['status'] = 'idle'
             elif job['status'] == 'failed':
