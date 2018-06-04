@@ -1,9 +1,0 @@
-#!/usr/bin/env python
-"""Update local repository.
-
-"""
-import sys
-with open('server.sha1sum','r') as f:
-    for line in f:
-        checksum, fits = line.split()
-        
