@@ -2,12 +2,13 @@
 """Fetch remote directories through rsync with parallelism and auto-retry.
 
 Syntax:
-pfetch.py RSYNC_OPTS SRC LIST DEST
+pfetch.py RSYNC_OPTS SRC LIST DEST [N_THREADS]
 
 RSYNC_OPTS is the options for rsync.
 SRC        is the URL of the remote parant path of all required directories.
 LIST       is a local text file which contains all required directories.
 DEST       is a local path which is the new parent path of required directories.
+N_THREADS  is the number of parallel rsync threads.
 
 Author: pigsboss@github
 2017-07-24
@@ -44,20 +45,27 @@ import os,sys,subprocess,time
 import numpy as np
 import errno
 
-nthreads = 4
+try:
+    nthreads = int(sys.argv[5])
+except:
+    nthreads = 4
 retry    = 100
 dispatch_on = True
 display_on = True
 
-def mkdir_p(path):
+COMMON_EXTS=['.fits','.db','.h5','.root','.zip','.gz','.tar','.bz2','.xz']
+
+
+def mkdir_p(p):
     try:
-        os.makedirs(path)
-        print 'create directory {}'.format(path)
+        os.makedirs(p)
+        print 'create directory {}'.format(p)
     except OSError as exc:  # Python >2.5
-        if exc.errno == errno.EEXIST and os.path.isdir(path):
+        if exc.errno == errno.EEXIST and os.path.isdir(p):
             pass
         else:
             raise
+
 try:
     rsync_opts = sys.argv[1]
     rsync_src  = sys.argv[2]
@@ -77,8 +85,12 @@ jobs_pool = []
 for i in range(len(fetch_list)):
     job = {}
     job['id']        = i
-    mkdir_p(path.join(rsync_dest, fetch_list[i]))
-    job['command']   = ['rsync', rsync_opts, path.join(rsync_src, fetch_list[i], ""), path.join(rsync_dest, fetch_list[i], "")]
+    if path.splitext(fetch_list[i])[-1].lower() in COMMON_EXTS:
+        mkdir_p(path.join(rsync_dest, path.split(fetch_list[i])[0]))
+        job['command']   = ['rsync', rsync_opts, path.join(rsync_src, fetch_list[i]), path.join(rsync_dest, fetch_list[i])]
+    else:
+        mkdir_p(path.join(rsync_dest, fetch_list[i]))
+        job['command']   = ['rsync', rsync_opts, path.join(rsync_src, fetch_list[i], ""), path.join(rsync_dest, fetch_list[i], "")]
     job['status']    = 'pending'
     job['return']    = None
     job['output']    = ''
@@ -208,7 +220,6 @@ def rsync(worker_id, interval=10.0):
                 raise StandardError('Status %s is undefined.'%job['status'])
         time.sleep(interval/1000.0)
         i += 1
-#        print i
     with open('pfetch.worker_%d.log'%worker_id, 'w') as f:
         f.write('\n'.join(worker['output']))
 
