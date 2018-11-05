@@ -1,7 +1,10 @@
 #!/usr/bin/env python
-"""Update local repository.
+"""Verify local repository.
 
+Syntax:
+verify-local-repo.py server-checksum [checksum-algorithm] [output]
 """
+
 import sys
 from subprocess import check_output
 from os import path
@@ -11,8 +14,12 @@ try:
     checksum_algorithm = sys.argv[2]
 except:
     checksum_algorithm = None
+try:
+    output_file = sys.argv[3]
+except:
+    output_file = 'local-repo-missing.txt'
 
-with open('local-repo-missing.txt', 'w') as g:
+with open(output_file, 'w') as g:
     with open(server_checksum_file, 'r') as f:
         for line in f:
             checksum, fits = line.split()

@@ -107,7 +107,7 @@ for i in range(nthreads):
     worker['status'] = 'idle'
     workers_pool.append(worker)
 
-def display(interval=500.0):
+def display(interval=2000.0):
     global jobs_pool, workers_pool
     job_progress = {}
     worker_progress = {}
