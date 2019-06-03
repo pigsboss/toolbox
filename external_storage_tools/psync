@@ -46,7 +46,6 @@ my $cfg;
 if(-d $deviceroot){
     if(-e -r $cfgfile){
 	$cfg = Config::IniFiles->new(-file=>$cfgfile);
-	print("Configuration file $cfgfile loaded.\n")
     }else{
 	print("Configuration file for the current host ($cfgfile) does not exits.\n");
 	exit 1;

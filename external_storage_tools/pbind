@@ -1,0 +1,47 @@
+#!/usr/bin/perl
+#
+#  Usage:
+#    pbind -a|-d PATH
+#  Options:
+#    -a  activate
+#    -d  deactivate
+#
+#  Copyright pigsboss@github
+#
+
+use strict;
+use warnings;
+use Config::IniFiles;
+use Sys::Hostname;
+use File::Spec;
+use Getopt::Std;
+
+our($opt_a, $opt_d);
+my $deviceroot;
+getopts('a:d:');
+$deviceroot = $opt_a if($opt_a);
+$deviceroot = $opt_d if($opt_d);
+
+my $hostname = hostname;
+my $cfgfile = File::Spec->catfile($deviceroot, ".$hostname.ini");
+my $cfg;
+if(-d $deviceroot){
+    if(-e -r $cfgfile){
+	$cfg = Config::IniFiles->new(-file=>$cfgfile);
+    }else{
+	print("Configuration file for the current host ($cfgfile) does not exits.\n");
+	exit 1;
+    }
+}else{
+    print("User specified device root $deviceroot does not exist.\n");
+    exit 1;
+}
+
+my @tasks = $cfg->Sections();
+my ($host_dir, $device_dir);
+for(@tasks){
+    $host_dir = File::Spec->canonpath($cfg->val($_, "host_dir"));
+    $device_dir = File::Spec->canonpath(File::Spec->catdir(($deviceroot, $cfg->val($_, "device_dir"))));
+    system('sudo', 'bindfs', '--multithreaded', $device_dir, $host_dir) if($opt_a);
+    system('sudo', 'umount', $host_dir)                                 if($opt_d);
+}
