@@ -1,0 +1,4 @@
+#!/bin/bash
+pbind -d $1
+psync -f $1
+
