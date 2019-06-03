@@ -1,7 +1,14 @@
 #!/usr/bin/perl
 #
 #  Usage:
-#    psync from|to|with PATH
+#    psync [-vzn] -f|-t|-w PATH
+#  Options:
+#    -v  verbose
+#    -z  zlib compress
+#    -n  dry-run
+#    -t  sync to
+#    -f  sync from
+#    -w  sync with
 #
 #  Copyright pigsboss@github
 #
@@ -11,9 +18,27 @@ use warnings;
 use Config::IniFiles;
 use Sys::Hostname;
 use File::Spec;
+use Getopt::Std;
 
-my $syncmode = lc($ARGV[0]);
-my $deviceroot = $ARGV[1];
+our($opt_v, $opt_n, $opt_z, $opt_t, $opt_f, $opt_w);
+my($syncmode, $deviceroot);
+getopts('vnzt:f:w:');
+if($opt_t){
+    $syncmode = 'to';
+    $deviceroot = $opt_t;
+}
+if($opt_f){
+    $syncmode = 'from';
+    $deviceroot = $opt_f;
+}
+if($opt_w){
+    $syncmode = 'with';
+    $deviceroot = $opt_w;
+}
+my $rsyncopts = '-rltu';
+$rsyncopts = $rsyncopts.'v' if($opt_v);
+$rsyncopts = $rsyncopts.'z' if($opt_z);
+$rsyncopts = $rsyncopts.'n' if($opt_n);
 
 my $hostname = hostname;
 my $cfgfile = File::Spec->catfile($deviceroot, ".$hostname.ini");
@@ -37,12 +62,12 @@ for(@tasks){
     $host_dir = $cfg->val($_, "host_dir");
     $device_dir = File::Spec->catdir(($deviceroot, $cfg->val($_, "device_dir")));
     if($syncmode eq 'from'){
-	system('rsync', '-rltuvn', '--existing', $device_dir, $host_dir);
+	system('rsync', $rsyncopts, '--existing', $device_dir, $host_dir);
     }elsif($syncmode eq 'to'){
-	system('rsync', '-rltuvn', $host_dir, $device_dir);
+	system('rsync', $rsyncopts, $host_dir, $device_dir);
     }elsif($syncmode eq 'with'){
-	system('rsync', '-rltuvn', $host_dir, $device_dir);
-	system('rsync', '-rltuvn', '--existing', $device_dir, $host_dir);
+	system('rsync', $rsyncopts, $host_dir, $device_dir);
+	system('rsync', $rsyncopts, '--existing', $device_dir, $host_dir);
     }else{
 	print("User specified sync mode is not supported.\n");
 	exit 2;
