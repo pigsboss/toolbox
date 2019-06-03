@@ -1,0 +1,53 @@
+#!/usr/bin/perl
+#
+#  Usage:
+#    psync from|to|with PATH
+#
+#  Copyright pigsboss@github
+#
+
+use strict;
+use warnings;
+use Config::IniFiles;
+use Sys::Hostname;
+use File::Spec;
+
+my $syncmode = lc($ARGV[0]);
+my $deviceroot = $ARGV[1];
+
+my $hostname = hostname;
+my $cfgfile = File::Spec->catfile($deviceroot, ".$hostname.ini");
+my $cfg;
+if(-d $deviceroot){
+    if(-e -r $cfgfile){
+	$cfg = Config::IniFiles->new(-file=>$cfgfile);
+	print("Configuration file $cfgfile loaded.\n")
+    }else{
+	print("Configuration file for the current host ($cfgfile) does not exits.\n");
+	exit 1;
+    }
+}else{
+    print("User specified device root $deviceroot does not exist.\n");
+    exit 1;
+}
+
+my @tasks = $cfg->Sections();
+my ($host_dir, $device_dir);
+for(@tasks){
+    $host_dir = $cfg->val($_, "host_dir");
+    $device_dir = File::Spec->catdir(($deviceroot, $cfg->val($_, "device_dir")));
+    if($syncmode eq 'from'){
+	system('rsync', '-rltuvn', '--existing', $device_dir, $host_dir);
+    }elsif($syncmode eq 'to'){
+	system('rsync', '-rltuvn', $host_dir, $device_dir);
+    }elsif($syncmode eq 'with'){
+	system('rsync', '-rltuvn', $host_dir, $device_dir);
+	system('rsync', '-rltuvn', '--existing', $device_dir, $host_dir);
+    }else{
+	print("User specified sync mode is not supported.\n");
+	exit 2;
+    }
+    print("Task $_ (sync $host_dir $syncmode $device_dir) has been finished.\n");
+}
+
+
