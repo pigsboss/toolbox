@@ -1,11 +1,8 @@
 #!/usr/bin/perl
 #
 #  Usage:
-#    psync [-vzn] -f|-t|-w PATH
+#    psync -f|-t|-w PATH
 #  Options:
-#    -v  verbose
-#    -z  zlib compress
-#    -n  dry-run
 #    -t  sync to
 #    -f  sync from
 #    -w  sync with
@@ -19,10 +16,12 @@ use Config::IniFiles;
 use Sys::Hostname;
 use File::Spec;
 use Getopt::Std;
+use File::Find;
 
-our($opt_v, $opt_n, $opt_z, $opt_t, $opt_f, $opt_w);
-my($syncmode, $deviceroot);
-getopts('vnzt:f:w:');
+our($opt_t, $opt_f, $opt_w);
+our $deviceroot;
+my $syncmode;
+getopts('t:f:w:');
 if($opt_t){
     $syncmode = 'to';
     $deviceroot = $opt_t;
@@ -35,10 +34,6 @@ if($opt_w){
     $syncmode = 'with';
     $deviceroot = $opt_w;
 }
-my $rsyncopts = '-rltu';
-$rsyncopts = $rsyncopts.'v' if($opt_v);
-$rsyncopts = $rsyncopts.'z' if($opt_z);
-$rsyncopts = $rsyncopts.'n' if($opt_n);
 
 my $hostname = hostname;
 my $cfgfile = File::Spec->catfile($deviceroot, ".$hostname.ini");
@@ -56,22 +51,48 @@ if(-d $deviceroot){
 }
 
 my @tasks = $cfg->Sections();
-my ($host_dir, $device_dir);
+our($host_dir, $device_dir);
 for(@tasks){
     $host_dir = $cfg->val($_, "host_dir");
     $device_dir = File::Spec->catdir(($deviceroot, $cfg->val($_, "device_dir")));
+    print("Task [$_]: sync $host_dir $syncmode $device_dir.\n");
     if($syncmode eq 'from'){
-	system('rsync', $rsyncopts, '--existing', $device_dir, $host_dir);
+	sync_from_device();
     }elsif($syncmode eq 'to'){
-	system('rsync', $rsyncopts, $host_dir, $device_dir);
+	sync_to_device();
     }elsif($syncmode eq 'with'){
-	system('rsync', $rsyncopts, $host_dir, $device_dir);
-	system('rsync', $rsyncopts, '--existing', $device_dir, $host_dir);
+	sync_to_device();
+	sync_from_device();
     }else{
 	print("User specified sync mode is not supported.\n");
 	exit 2;
     }
-    print("Task $_ (sync $host_dir $syncmode $device_dir) has been finished.\n");
+    print("Task [$_] is finished.\n");
+    print("----------------------------------------------\n");
 }
 
+sub sync_from_device{
+    chdir $host_dir;
+    find(\&update_exists, '.');
+}
 
+sub sync_to_device{
+    print("  Copying $host_dir to $device_dir...");
+    system('cp', '-a', '-u', $host_dir, File::Spec->catdir($device_dir, '../'));
+    print("\r  Copying $host_dir to $device_dir... OK.\n");
+}
+
+sub update_exists{
+    my $curpath = $File::Find::name;
+    my $devicepath;
+    my $hostpath;
+    if(-f $curpath){
+	$devicepath = File::Spec->catfile($device_dir, $curpath);
+	$hostpath   = File::Spec->catfile($host_dir, $curpath);
+	if(-e -f $devicepath){
+	    print("  Updating $hostpath...");
+	    system('cp', '-d', '--preserve=all', '-u', $devicepath, $curpath);
+	    print("\r  Updating $hostpath... OK.\n");
+	}
+    }
+}
