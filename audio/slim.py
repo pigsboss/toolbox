@@ -44,8 +44,9 @@ import signal
 import pickle
 import warnings
 from mutagen.dsf import DSF
-from mutagen.flac import FLAC
-from mutagen.mp4 import MP4
+from mutagen.flac import FLAC, Picture
+from mutagen.mp4 import MP4, MP4Cover
+from mutagen.id3 import ID3, APIC
 from multiprocessing import cpu_count, Pool
 from time import time
 from os import path
@@ -168,14 +169,39 @@ PRESETS = {
 }
 
 def add_cover_art(audio_file, picture_file):
-    if audio_file.endswitch('.flac'):
-        pass
-    elif audio_file.endswitch('.m4a'):
-        pass
-    elif audio_file.endswitch('.mp3'):
-        pass
+    if audio_file.lower().endswith('.flac'):
+        metadata = FLAC(audio_file)
+        coverart = Picture()
+        coverart.type = 3
+        if picture_file.lower().endswith('.png'):
+            mime = 'image/png'
+        else:
+            mime = 'image/jpeg'
+        coverart.desc = 'front cover'
+        with open(picture_file, 'rb') as f:
+            coverart.date = f.read()
+        metadata.add_picture(coverart)
+    elif audio_file.endswith('.m4a'):
+        metadata = MP4(audio_file)
+        with open(picture_file, 'rb') as f:
+            if picture_file.lower().endswith('.png'):
+                metadata['covr'] = [MP4Cover(f.read(), imageformat=MP4Cover.FORMAT_PNG)]
+            else:
+                metadata['covr'] = [MP4Cover(f.read(), imageformat=MP4Cover.FORMAT_JPEG)]
+    elif audio_file.endswith('.mp3'):
+        metadata = ID3(audio_file)
+        with open(picture_file, 'rb') as f:
+            metadata['APIC'] = APIC(
+                encoding=3,
+                mime='image/jpeg',
+                type=3,
+                desc=u'Cover',
+                data=f.read()
+            )
     else:
-        assert False, u'unsupported'
+        assert False, 'unsupported audio file format.'
+    metadata.save()
+    return
 
 def get_tag(tags, key, scheme):
     return '\n'.join(tags[TAG_MAP[scheme][key]])
@@ -524,6 +550,7 @@ class AudioTrack(object):
             pass
         else:
             raise TypeError(u'unsupported preset {}.'.format(preset))
+        add_cover_art(filepath, path.join(path.split(filepath)[0], 'cover.{}'.format(PRESETS[preset]['art_format'])))
         set_source_file_checksum(filepath, self.file_checksum['checksum'], program=self.file_checksum['program'])
         return
 
@@ -633,7 +660,7 @@ class Library(object):
         tracks = find_tracks(self.source_path)
         return
 
-    def Export(self, match=None, prefix=None, preset='dxd', exists='skip'):
+    def Export(self, match=None, prefix=None, preset='dxd', exists='skip', verbose=False):
         """Export matched tracks.
 """
         if match is None:
@@ -661,6 +688,8 @@ class Library(object):
                         path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
                     ]
                 run(args, check=True, stdout=DEVNULL, stderr=DEVNULL)
+                if verbose:
+                    print(u'Directory \"{}\" is ready.'.format(path.join(prefix, a.GenPath())))
         for t in self.tracks.values():
             if artist_match in t.metadata['albumartist'] and album_match in t.metadata['album'] and track_match in t.GenFilename():
                 t.Export(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']), preset, exists)
@@ -730,7 +759,7 @@ def main():
         l.Print(match=matched, verbose=verbose)
     elif action.lower() in ['export']:
         l = load_library(args[0])
-        l.Export(match=matched, preset=preset, prefix=path.normpath(path.abspath(output)), exists=exists)
+        l.Export(match=matched, preset=preset, prefix=path.normpath(path.abspath(output)), exists=exists, verbose=verbose)
     else:
         assert False, 'unhandled action'
     return
