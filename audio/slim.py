@@ -76,7 +76,7 @@ TAG_MAP = {
         'album'       : 'TALB',
         'albumartist' : 'TPE2',
         'artist'      : 'TPE1',
-        'conducter'   : 'TPE3',
+        'conductor'   : 'TPE3',
         'composer'    : 'TCOM',
         'tracknumber' : 'TRCK',
         'discnumber'  : 'TPOS',
@@ -94,7 +94,7 @@ TAG_MAP = {
         'album'       : '\xa9alb',
         'albumartist' : 'aART',
         'artist'      : '\xa9ART',
-        'conducter'   : '----:com.apple.iTunes:CONDUCTOR',
+        'conductor'   : '----:com.apple.iTunes:CONDUCTOR',
         'composer'    : '\xa9wrt',
         'tracknumber' : 'trkn',
         'discnumber'  : 'disk',
@@ -111,7 +111,7 @@ TAG_MAP = {
         'album'       : 'album',
         'albumartist' : 'albumartist',
         'artist'      : 'artist',
-        'conducter'   : 'conductor',
+        'conductor'   : 'conductor',
         'composer'    : 'composer',
         'tracknumber' : 'tracknumber',
         'discnumber'  : 'discnumber',
@@ -464,14 +464,24 @@ class AudioTrack(object):
         if not hasattr(self, 'metadata'):
             self.UpdateMetadata()
         try:
-            return '{:d}.{:02d} - {}'.format(self.metadata['discnumber'], self.metadata['tracknumber'], genpath(self.metadata['title']))
+            return '{:d}.{:02d} - {}'.format(
+                self.metadata['discnumber'],
+                self.metadata['tracknumber'],
+                genpath(self.metadata['title'])
+            )
         except ValueError:
-            return '{:02d} - {}'.format(self.metadata['tracknumber'], genpath(self.metadata['title']))
+            return '{:02d} - {}'.format(
+                self.metadata['tracknumber'],
+                genpath(self.metadata['title'])
+            )
 
     def GenParentPath(self):
         if not hasattr(self, 'metadata'):
             self.UpdateMetadata()
-        return path.join(genpath(self.metadata['albumartist']), genpath(self.metadata['album']))
+        return path.join(
+            genpath(self.metadata['albumartist']),
+            genpath(self.metadata['album'])
+        )
 
     def GenPath(self):
         return path.join(self.GenParentPath(), self.GenFilename())
@@ -483,7 +493,9 @@ class AudioTrack(object):
 
     def UpdateAudioStreamChecksum(self, program=DEFAULT_CHECKSUM_PROG):
         self.audio_stream_checksum = {
-            'program': program, 'checksum': audio_stream_checksum(self.source, program=program)}
+            'program': program,
+            'checksum': audio_stream_checksum(self.source, program=program)
+        }
         return self.audio_stream_checksum
 
     def UpdateMetadata(self):
@@ -505,7 +517,16 @@ class AudioTrack(object):
             self.metadata['discnumber'] = get_discnumber(metadata, scheme)
         except KeyError:
             self.metadata['discnumber'] = ''
-        for key in ['conductor', 'composer', 'isrc', 'encoded-by', 'genre', 'comment', 'copyright', 'description']:
+        for key in [
+                'conductor',
+                'composer',
+                'isrc',
+                'encoded-by',
+                'genre',
+                'comment',
+                'copyright',
+                'description'
+        ]:
             try:
                 self.metadata[key] = get_tag(metadata, key, scheme)
             except KeyError:
@@ -550,8 +571,18 @@ class AudioTrack(object):
             pass
         else:
             raise TypeError(u'unsupported preset {}.'.format(preset))
-        add_cover_art(filepath, path.join(path.split(filepath)[0], 'cover.{}'.format(PRESETS[preset]['art_format'])))
-        set_source_file_checksum(filepath, self.file_checksum['checksum'], program=self.file_checksum['program'])
+        add_cover_art(
+            filepath,
+            path.join(
+                path.split(filepath)[0],
+                'cover.{}'.format(PRESETS[preset]['art_format'])
+            )
+        )
+        set_source_file_checksum(
+            filepath,
+            self.file_checksum['checksum'],
+            program=self.file_checksum['program']
+        )
         return
 
     def ExtractCoverArt(self, filepath):
@@ -690,9 +721,17 @@ class Library(object):
                 run(args, check=True, stdout=DEVNULL, stderr=DEVNULL)
                 if verbose:
                     print(u'Directory \"{}\" is ready.'.format(path.join(prefix, a.GenPath())))
+        ## export
+        to_path  = []
+        tracks   = []
         for t in self.tracks.values():
             if artist_match in t.metadata['albumartist'] and album_match in t.metadata['album'] and track_match in t.GenFilename():
-                t.Export(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']), preset, exists)
+                tracks.append(t)
+                to_path.append(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']))
+                ## t.Export(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']), preset, exists)
+        with Pool(processes = cpu_count()//2) as pool:
+            pool.starmap(AudioTrack.Export, zip(tracks, to_path, [preset]*len(tracks), [exists]*len(tracks)))
+            run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
         return
 
     def Print(self, match=None, verbose=False):
