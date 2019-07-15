@@ -43,6 +43,7 @@ import hashlib
 import signal
 import pickle
 import warnings
+import csv
 from mutagen.dsf import DSF
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
@@ -55,7 +56,15 @@ from subprocess import run, Popen, PIPE, DEVNULL
 from tempfile import TemporaryDirectory
 
 DEFAULT_CHECKSUM_PROG = 'sha224sum'
+DEFAULT_TAG_KEYS = [
+    'title',
+    'album',
+    'albumartist',
+    'conductor'
+]
 SAFE_PATH_CHARS = ' _'
+
+def copy_tags(from_file, to_file, keys=)
 def genpath(s):
     """Generate valid path from input string.
 """
@@ -76,7 +85,7 @@ TAG_MAP = {
         'album'       : 'TALB',
         'albumartist' : 'TPE2',
         'artist'      : 'TPE1',
-        'conducter'   : 'TPE3',
+        'conductor'   : 'TPE3',
         'composer'    : 'TCOM',
         'tracknumber' : 'TRCK',
         'discnumber'  : 'TPOS',
@@ -94,7 +103,7 @@ TAG_MAP = {
         'album'       : '\xa9alb',
         'albumartist' : 'aART',
         'artist'      : '\xa9ART',
-        'conducter'   : '----:com.apple.iTunes:CONDUCTOR',
+        'conductor'   : '----:com.apple.iTunes:CONDUCTOR',
         'composer'    : '\xa9wrt',
         'tracknumber' : 'trkn',
         'discnumber'  : 'disk',
@@ -111,7 +120,7 @@ TAG_MAP = {
         'album'       : 'album',
         'albumartist' : 'albumartist',
         'artist'      : 'artist',
-        'conducter'   : 'conductor',
+        'conductor'   : 'conductor',
         'composer'    : 'composer',
         'tracknumber' : 'tracknumber',
         'discnumber'  : 'discnumber',
@@ -370,11 +379,11 @@ def dsd_to_itunes(*args):
     with TemporaryDirectory(dir=outdir) as tmpdir:
         aiff = path.join(tmpdir, 'a.aif')
         caff = path.join(tmpdir, 'a.caf')
-        m4a  = path.join(tmpdir, 'a.m4a')
+##        m4a  = path.join(tmpdir, 'a.m4a')
         dsd_to_aiff(infile, aiff)
         convert_to_caff(aiff, caff)
-        caff_to_m4a(caff, m4a)
-        tag_m4a(infile, m4a, None, outfile)
+        caff_to_m4a(caff, outfile)
+##        tag_m4a(infile, m4a, None, outfile)
     return
 
 def dsd_to_flac(*args, preset='dxd', compression='-5'):
@@ -392,10 +401,10 @@ def flac_to_itunes(*args):
     infile, outfile, outdir = check_converter_args(*args)
     with TemporaryDirectory(dir=outdir) as tmpdir:
         caff = path.join(tmpdir, 'a.caf')
-        m4a  = path.join(tmpdir, 'a.m4a')
+##        m4a  = path.join(tmpdir, 'a.m4a')
         convert_to_caff(infile, caff)
-        caff_to_m4a(caff, m4a)
-        tag_m4a(infile, m4a, None, outfile)
+        caff_to_m4a(caff, outfile)
+##        tag_m4a(infile, m4a, None, outfile)
     return
 
 def find_tracks(srcdir):
@@ -545,7 +554,6 @@ class AudioTrack(object):
                 flac_to_itunes(self.source, filepath)
             else:
                 raise TypeError(u'Format not supported yet.')
-            
         elif preset.lower() in ['radio']:
             pass
         else:
@@ -695,7 +703,7 @@ class Library(object):
                 t.Export(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']), preset, exists)
         return
 
-    def Print(self, match=None, verbose=False):
+    def Print(self, match=None, verbose=False, output=''):
         """Print matched albums and audio tracks.
 """
         if match is None:
@@ -704,17 +712,28 @@ class Library(object):
             track_match = ''
         else:
             artist_match, album_match, track_match = match.split('/')
-        for a in self.albums.values():
-            if artist_match in a.artist and album_match in a.title:
-                print(u'{}/{}:'.format(a.artist, a.title))
-                for t in a:
-                    if track_match in t.GenFilename():
-                        try:
-                            print(u'  [{:<4}] {:d}.{:02d} - {}'.format(t.format, t.metadata['discnumber'], t.metadata['tracknumber'], t.metadata['title']))
-                        except ValueError:
-                            print(u'  [{:<4}] {:02d} - {}'.format(t.format, t.metadata['tracknumber'], t.metadata['title']))
-                        if verbose:
-                            t.Print()
+        try:
+            ## print to csv file
+            with open(output, 'w', newline='') as csvfile:
+                fields = ['albumartist', 'album', 'discnumber', 'tracknumber', 'artist', 'title', 'genre', 'composer', 'conductor']
+                writer = csv.DictWriter(csvfile, fieldnames=fields, extrasaction='ignore')
+                writer.writeheader()
+                for t in self.tracks.values():
+                    if artist_match in t.metadata['albumartist'] and album_match in t.metadata['album'] and track_match in t.GenFilename():
+                        writer.writerow(t.metadata)
+        except IOError:
+            ## print to stdout
+            for a in self.albums.values():
+                if artist_match in a.artist and album_match in a.title:
+                    print(u'{}/{}:'.format(a.artist, a.title))
+                    for t in a:
+                        if track_match in t.GenFilename():
+                            try:
+                                print(u'  [{:<4}] {:d}.{:02d} - {}'.format(t.format, t.metadata['discnumber'], t.metadata['tracknumber'], t.metadata['title']))
+                            except ValueError:
+                                print(u'  [{:<4}] {:02d} - {}'.format(t.format, t.metadata['tracknumber'], t.metadata['title']))
+                            if verbose:
+                                t.Print()
         return
 
 def save_library(obj, to_path):
@@ -732,6 +751,7 @@ def main():
     verbose = False
     matched = None
     exists  = 'skip'
+    output  = ''
     for opt, val in opts:
         if opt == '-s':
             srcdir = path.normpath(path.abspath(val))
@@ -756,7 +776,7 @@ def main():
         print(__doc__)
     elif action.lower() in ['print']:
         l = load_library(args[0])
-        l.Print(match=matched, verbose=verbose)
+        l.Print(match=matched, verbose=verbose, output=output)
     elif action.lower() in ['export']:
         l = load_library(args[0])
         l.Export(match=matched, preset=preset, prefix=path.normpath(path.abspath(output)), exists=exists, verbose=verbose)
