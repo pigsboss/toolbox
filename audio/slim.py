@@ -55,26 +55,22 @@ from getopt import gnu_getopt
 from subprocess import run, Popen, PIPE, DEVNULL
 from tempfile import TemporaryDirectory
 
-DEFAULT_CHECKSUM_PROG = 'sha224sum'
-DEFAULT_TAG_KEYS = [
-    'title',
-    'album',
-    'albumartist',
-    'conductor'
-]
-SAFE_PATH_CHARS = ' _'
 
-def copy_tags(from_file, to_file, keys=)
-def genpath(s):
-    """Generate valid path from input string.
-"""
-    p = ''
-    for x in s:
-        if x.isalpha() or x.isdigit() or x in SAFE_PATH_CHARS:
-            p+=x
-        else:
-            p+='_'
-    return p.strip()
+DEFAULT_TAG_KEYS = [
+    'title'      , 
+    'album'      , 
+    'albumartist', 
+    'artist'     , 
+    'conductor'  , 
+    'composer'   , 
+    'date'       , 
+    'isrc'       , 
+    'encoded-by' , 
+    'genre'      , 
+    'comment'    , 
+    'copyright'  , 
+    'description' 
+]
 
 ## Reference:
 ##   https://wiki.hydrogenaud.io/index.php?title=Tag_Mapping
@@ -98,7 +94,7 @@ TAG_MAP = {
         'copyright'   : 'TCOP',
         'description' : 'TIT3'
     },
-    'M4A': {
+    'MP4': {
         'title'       : '\xa9nam',
         'album'       : '\xa9alb',
         'albumartist' : 'aART',
@@ -177,6 +173,57 @@ PRESETS = {
     }
 }
 
+DEFAULT_CHECKSUM_PROG = 'sha224sum'
+SAFE_PATH_CHARS = ' _'
+
+def copy_tags(src, dest, keys=DEFAULT_TAG_KEYS):
+    """Copy tags from source audio file to destined audio file.
+"""
+    if src.lower().endswith('.dsf'):
+        src_metadata = DSF(src)
+        src_scheme = 'ID3'
+    elif src.lower().endswith('.flac'):
+        src_metadata = FLAC(src)
+        src_scheme = 'Vorbis'
+    elif src.lower().endswith('.m4a'):
+        src_metadata = MP4(src)
+        src_scheme = 'MP4'
+    elif src.lower().endswith('.mp3'):
+        src_metadata = ID3(src)
+        src_scheme = 'ID3'
+    else:
+        raise TypeError(u'unsupported audio file format {}.'.format(src))
+    if dest.lower().endswith('.dsf'):
+        dest_metadata = DSF(dest)
+        dest_scheme = 'ID3'
+    elif dest.lower().endswith('.flac'):
+        dest_metadata = FLAC(dest)
+        dest_scheme = 'Vorbis'
+    elif dest.lower().endswith('.m4a'):
+        dest_metadata = MP4(dest)
+        dest_scheme = 'MP4'
+    elif dest.lower().endswith('.mp3'):
+        dest_metadata = ID3(dest)
+        dest_scheme = 'ID3'
+    else:
+        raise TypeError(u'unsupported audio file format {}.'.format(dest))
+    for k in keys:
+        if TAG_MAP[src_scheme][k] in src_metadata:
+            dest_metadata[TAG_MAP[dest_scheme][k]] = src_metadata[TAG_MAP[src_scheme][k]]
+    dest_metadata.save()
+    return
+
+def genpath(s):
+    """Generate valid path from input string.
+"""
+    p = ''
+    for x in s:
+        if x.isalpha() or x.isdigit() or x in SAFE_PATH_CHARS:
+            p+=x
+        else:
+            p+='_'
+    return p.strip()
+
 def add_cover_art(audio_file, picture_file):
     if audio_file.lower().endswith('.flac'):
         metadata = FLAC(audio_file)
@@ -251,7 +298,7 @@ def get_source_file_checksum(audio_file):
         scheme = 'ID3'
     elif extname.lower() == '.m4a':
         metadata = MP4(audio_file)
-        scheme = 'M4A'
+        scheme = 'MP4'
     else:
         raise TypeError(u'unsupported audio format {}.'.format(extname))
     for cmtline in metadata.tags[TAG_MAP[scheme]['comment']]:
@@ -271,7 +318,7 @@ def set_source_file_checksum(audio_file, csum, program=DEFAULT_CHECKSUM_PROG):
         scheme = 'ID3'
     elif extname.lower() == '.m4a':
         metadata = MP4(audio_file)
-        scheme = 'M4A'
+        scheme = 'MP4'
     else:
         raise TypeError(u'unsupported audio format {}.'.format(extname))
     if TAG_MAP[scheme]['comment'] in metadata.tags.keys():
@@ -579,6 +626,7 @@ class AudioTrack(object):
             pass
         else:
             raise TypeError(u'unsupported preset {}.'.format(preset))
+        copy_tags(self.source, filepath)
         add_cover_art(
             filepath,
             path.join(
