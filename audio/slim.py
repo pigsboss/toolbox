@@ -47,7 +47,7 @@ import csv
 from mutagen.dsf import DSF
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
-from mutagen.id3 import ID3, APIC
+from mutagen.id3 import ID3, APIC, ID3TimeStamp
 from multiprocessing import cpu_count, Pool
 from time import time
 from os import path
@@ -209,7 +209,16 @@ def copy_tags(src, dest, keys=DEFAULT_TAG_KEYS):
         raise TypeError(u'unsupported audio file format {}.'.format(dest))
     for k in keys:
         if TAG_MAP[src_scheme][k] in src_metadata:
-            dest_metadata[TAG_MAP[dest_scheme][k]] = src_metadata[TAG_MAP[src_scheme][k]]
+            if k == 'date' and src_scheme == 'ID3':
+                dest_metadata[TAG_MAP[dest_scheme]['date']] = map(ID3TimeStamp.get_text, src_metadata[TAG_MAP['ID3']['date']])
+            elif k == 'isrc' and src_scheme == 'ID3':
+                dest_metadata[TAG_MAP[dest_scheme]['isrc']] = ''.join(src_metadata[TAG_MAP['ID3']['isrc']]).encode('utf-8')
+            else:
+                try:
+                    dest_metadata[TAG_MAP[dest_scheme][k]] = src_metadata[TAG_MAP[src_scheme][k]]
+                except TypeError:
+                    print(k)
+                    raise TypeError()
     dest_metadata.save()
     return
 
@@ -426,11 +435,11 @@ def dsd_to_itunes(*args):
     with TemporaryDirectory(dir=outdir) as tmpdir:
         aiff = path.join(tmpdir, 'a.aif')
         caff = path.join(tmpdir, 'a.caf')
-##        m4a  = path.join(tmpdir, 'a.m4a')
+        m4a  = path.join(tmpdir, 'a.m4a')
         dsd_to_aiff(infile, aiff)
         convert_to_caff(aiff, caff)
-        caff_to_m4a(caff, outfile)
-##        tag_m4a(infile, m4a, None, outfile)
+        caff_to_m4a(caff, m4a)
+        tag_m4a(infile, m4a, None, outfile)
     return
 
 def dsd_to_flac(*args, preset='dxd', compression='-5'):
@@ -448,10 +457,10 @@ def flac_to_itunes(*args):
     infile, outfile, outdir = check_converter_args(*args)
     with TemporaryDirectory(dir=outdir) as tmpdir:
         caff = path.join(tmpdir, 'a.caf')
-##        m4a  = path.join(tmpdir, 'a.m4a')
+        m4a  = path.join(tmpdir, 'a.m4a')
         convert_to_caff(infile, caff)
-        caff_to_m4a(caff, outfile)
-##        tag_m4a(infile, m4a, None, outfile)
+        caff_to_m4a(caff, m4a)
+        tag_m4a(infile, m4a, None, outfile)
     return
 
 def find_tracks(srcdir):
@@ -626,7 +635,7 @@ class AudioTrack(object):
             pass
         else:
             raise TypeError(u'unsupported preset {}.'.format(preset))
-        copy_tags(self.source, filepath)
+##        copy_tags(self.source, filepath)
         add_cover_art(
             filepath,
             path.join(
