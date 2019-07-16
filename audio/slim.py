@@ -46,7 +46,7 @@ import warnings
 import csv
 from mutagen.dsf import DSF
 from mutagen.flac import FLAC, Picture
-from mutagen.mp4 import MP4, MP4Cover
+from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 from mutagen.id3 import ID3, APIC, ID3TimeStamp
 from multiprocessing import cpu_count, Pool
 from time import time
@@ -77,57 +77,89 @@ DEFAULT_TAG_KEYS = [
 ##   https://mutagen.readthedocs.io/en/latest/api/vcomment.html#mutagen._vorbis.VCommentDict
 TAG_MAP = {
     'ID3': {
-        'title'       : 'TIT2',
-        'album'       : 'TALB',
-        'albumartist' : 'TPE2',
-        'artist'      : 'TPE1',
-        'conductor'   : 'TPE3',
-        'composer'    : 'TCOM',
-        'tracknumber' : 'TRCK',
-        'discnumber'  : 'TPOS',
-        'date'        : 'TDRC',
-        'isrc'        : 'TSRC',
-        'encoded-by'  : 'TENC',
-        'encoder'     : 'TSSE',
-        'genre'       : 'TCON',
-        'comment'     : 'COMM',
-        'copyright'   : 'TCOP',
-        'description' : 'TIT3'
-    },
+        'grouping'      : 'TIT1',
+        'title'         : 'TIT2',
+        'subtitle'      : 'TIT3',
+        'album'         : 'TALB',
+        'discsubtitle'  : 'TSST',
+        'artist'        : 'TPE1',
+        'albumartist'   : 'TPE2',
+        'conductor'     : 'TPE3',
+        'remixer'       : 'TPE4',
+        'composer'      : 'TCOM',
+        'lyricist'      : 'TEXT',
+        'publisher'     : 'TPUB',
+        'tracknumber'   : 'TRCK',
+        'discnumber'    : 'TPOS',
+        'date'          : 'TDRC',
+        'year'          : 'TYER',
+        'isrc'          : 'TSRC',
+        'encoded-by'    : 'TENC',
+        'encoder'       : 'TSSE',
+        'compilation'   : 'TCMP',
+        'genre'         : 'TCON',
+        'comment'       : 'COMM',
+        'copyright'     : 'TCOP',
+        'language'      : 'TLAN'
+    },                  
     'MP4': {
-        'title'       : '\xa9nam',
-        'album'       : '\xa9alb',
-        'albumartist' : 'aART',
-        'artist'      : '\xa9ART',
-        'conductor'   : '----:com.apple.iTunes:CONDUCTOR',
-        'composer'    : '\xa9wrt',
-        'tracknumber' : 'trkn',
-        'discnumber'  : 'disk',
-        'date'        : '\xa9day',
-        'isrc'        : '----:com.apple.iTunes:ISRC',
-        'encoded-by'  : '\xa9too',
-        'genre'       : '\xa9gen',
-        'comment'     : '\xa9cmt',
-        'copyright'   : 'cprt',
-        'description' : 'desc'
-    },
+        'grouping'      : '\xa9grp',
+        'title'         : '\xa9nam',
+        'subtitle'      : '----:com.apple.iTunes:SUBTITLE',
+        'album'         : '\xa9alb',
+        'discsubtitle'  : '----:com.apple.iTunes:DISCSUBTITLE',
+        'albumartist'   : 'aART',
+        'artist'        : '\xa9ART',
+        'conductor'     : '----:com.apple.iTunes:CONDUCTOR',
+        'remixer'       : '----:com.apple.iTunes:REMIXER',
+        'composer'      : '\xa9wrt',
+        'lyricist'      : '----:com.apple.iTunes:LYRICIST',
+        'license'       : '----:com.apple.iTunes:LICENSE',
+        'label'         : '----:com.apple.iTunes:LABEL',
+        'tracknumber'   : 'trkn',
+        'discnumber'    : 'disk',
+        'year'          : '\xa9day',
+        'isrc'          : '----:com.apple.iTunes:ISRC',
+        'encoded-by'    : '\xa9too',
+        'genre'         : '\xa9gen',
+        'compilation'   : 'cpil',
+        'comment'       : '\xa9cmt',
+        'copyright'     : 'cprt',
+        'language'      : '----:com.apple.iTunes:LANGUAGE',
+        'description'   : 'desc'
+    },                  
     'Vorbis': {
-        'title'       : 'title',
-        'album'       : 'album',
-        'albumartist' : 'albumartist',
-        'artist'      : 'artist',
-        'conductor'   : 'conductor',
-        'composer'    : 'composer',
-        'tracknumber' : 'tracknumber',
-        'discnumber'  : 'discnumber',
-        'date'        : 'date',
-        'isrc'        : 'isrc',
-        'encoded-by'  : 'encoded-by',
-        'encoder'     : 'encoder',
-        'genre'       : 'genre',
-        'comment'     : 'comment',
-        'copyright'   : 'copyright',
-        'description' : 'description'
+        'grouping'      : 'grouping',
+        'title'         : 'title',
+        'subtitle'      : 'subtitle',
+        'album'         : 'album',
+        'discsubtitle'  : 'discsubtitle',
+        'albumartist'   : 'albumartist',
+        'artist'        : 'artist',
+        'conductor'     : 'conductor',
+        'remixer'       : 'remixer',
+        'composer'      : 'composer',
+        'lyricist'      : 'lyricist',
+        'performer'     : 'performer',
+        'publisher'     : 'publisher',
+        'label'         : 'label',
+        'license'       : 'license',
+        'tracknumber'   : 'tracknumber',
+        'totaltracks'   : 'totaltracks',
+        'tracktotal'    : 'tracktotal',
+        'discnumber'    : 'discnumber',
+        'totaldiscs'    : 'totaldiscs',
+        'disctotal'     : 'disctotal',
+        'date'          : 'date',
+        'isrc'          : 'isrc',
+        'encoded-by'    : 'encoded-by',
+        'encoder'       : 'encoder',
+        'genre'         : 'genre',
+        'compilation'   : 'compilation',
+        'comment'       : 'comment',
+        'copyright'     : 'copyright',
+        'language'      : 'language',
+        'description'   : 'description'
     }
 }
 
@@ -175,6 +207,93 @@ PRESETS = {
 
 DEFAULT_CHECKSUM_PROG = 'sha224sum'
 SAFE_PATH_CHARS = ' _'
+
+def load_tags(audio_file):
+    """Load tags from audio file.
+"""
+    if audio_file.lower().endswith('.dsf'):
+        audio = DSF(audio_file)
+        scheme = 'ID3'
+    elif audio_file.lower().endswith('.flac'):
+        audio = FLAC(audio_file)
+        scheme = 'Vorbis'
+    elif audio_file.lower().endswith('.m4a'):
+        audio = MP4(audio_file)
+        scheme = 'MP4'
+    elif audio_file.lower().endswith('.mp3'):
+        audio = ID3(audio_file)
+        scheme ='ID3'
+    else:
+        raise TypeError(u'unsupported audio file format {}.'.format(audio_file))
+    meta = {}
+    for k in TAG_MAP[scheme]:
+        if TAG_MAP[scheme][k] in audio.keys():
+            if k == 'date':
+                meta[k] = audio[TAG_MAP[scheme][k]][0]
+                if scheme == 'ID3':
+                    meta[k] = meta[k].get_text()
+            elif k == 'discnumber':
+                if scheme in ['ID3', 'Vorbis']:
+                    try:
+                        dn, td = map(int, audio[TAG_MAP[scheme][k]][0].split('/'))
+                        meta[k] = dn
+                        if td > 0:
+                            meta['totaldiscs'] = td
+                    except ValueError:
+                        meta[k] = int(audio[TAG_MAP[scheme][k]][0])
+                elif scheme == 'MP4':
+                    try:
+                        dn, td = audio[TAG_MAP[scheme][k]][0]
+                        meta[k] = dn
+                        if td > 0:
+                            meta['totaldiscs'] = td
+                    except ValueError:
+                        meta[k] = audio[TAG_MAP[scheme][k]][0]
+            elif k == 'tracknumber':
+                if scheme in ['ID3', 'Vorbis']:
+                    try:
+                        tn, tt = map(int, audio[TAG_MAP[scheme][k]][0].split('/'))
+                        meta[k] = tn
+                        if tt > 0:
+                            meta['totaltracks'] = tt
+                    except ValueError:
+                        meta[k] = int(audio[TAG_MAP[scheme][k]][0])
+                elif scheme == 'MP4':
+                    try:
+                        tn, tt = audio[TAG_MAP[scheme][k]][0]
+                        meta[k] = tn
+                        if tt > 0:
+                            meta['totaltracks'] = tt
+                    except ValueError:
+                        meta[k] = audio[TAG_MAP[scheme][k]][0]
+            elif k in ['totaldiscs', 'disctotal']:
+                meta['totaldiscs'] = int(audio[TAG_MAP[scheme][k]][0])
+            elif k in ['totaltracks', 'tracktotal']:
+                meta['totaltracks'] = int(audio[TAG_MAP[scheme][k]][0])
+            elif k == 'year':
+                meta['date'] = ID3TimeStamp(audio[TAG_MAP[scheme][k]][0]).get_text()
+            elif k == 'compilation':
+                meta[k] = bool(int(audio[TAG_MAP[scheme][k]][0]))
+            elif scheme == 'MP4' and TAG_MAP[scheme][k].startswith('----'):
+                ## MP4 freeform keys start with '----' and only accept bytearray instead of str.
+                meta[k] = list(map(MP4FreeForm.decode, audio[TAG_MAP[scheme][k]]))
+            elif scheme == 'ID3':
+                meta[k] = audio[TAG_MAP[scheme][k]].text
+            elif k in ['performer', 'composer', 'conductor', 'lyricist', 'genre', 'comment']: ## reference: http://age.hobba.nl/audio/mirroredpages/ogg-tagging.html
+                meta[k] = audio[TAG_MAP[scheme][k]]
+            else:
+                meta[k] = audio[TAG_MAP[scheme][k]][0]
+        if k == 'comment':
+            if scheme == 'ID3':
+                id3_comm = []
+                for kk in audio.keys():
+                    print(kk)
+                    if kk.lower().startswith('comm'):
+                        id3_comm += list(map(str.splitlines,audio[kk].text))
+                meta[k] = id3_comm
+            else:
+                meta[k] = audio[TAG_MAP[scheme][k]]
+    return meta
 
 def copy_tags(src, dest, keys=DEFAULT_TAG_KEYS):
     """Copy tags from source audio file to destined audio file.
