@@ -44,6 +44,7 @@ import signal
 import pickle
 import warnings
 import csv
+from mutagen.mp3 import MP3
 from mutagen.dsf import DSF
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
@@ -55,22 +56,6 @@ from getopt import gnu_getopt
 from subprocess import run, Popen, PIPE, DEVNULL
 from tempfile import TemporaryDirectory
 
-
-DEFAULT_TAG_KEYS = [
-    'title'      , 
-    'album'      , 
-    'albumartist', 
-    'artist'     , 
-    'conductor'  , 
-    'composer'   , 
-    'date'       , 
-    'isrc'       , 
-    'encoded-by' , 
-    'genre'      , 
-    'comment'    , 
-    'copyright'  , 
-    'description' 
-]
 
 ## Reference:
 ##   https://wiki.hydrogenaud.io/index.php?title=Tag_Mapping
@@ -210,6 +195,10 @@ SAFE_PATH_CHARS = ' _'
 
 def load_tags(audio_file):
     """Load tags from audio file.
+
+Reference:
+http://age.hobba.nl/audio/mirroredpages/ogg-tagging.html
+
 """
     if audio_file.lower().endswith('.dsf'):
         audio = DSF(audio_file)
@@ -221,7 +210,7 @@ def load_tags(audio_file):
         audio = MP4(audio_file)
         scheme = 'MP4'
     elif audio_file.lower().endswith('.mp3'):
-        audio = ID3(audio_file)
+        audio = MP3(audio_file)
         scheme ='ID3'
     else:
         raise TypeError(u'unsupported audio file format {}.'.format(audio_file))
@@ -232,46 +221,41 @@ def load_tags(audio_file):
                 meta[k] = audio[TAG_MAP[scheme][k]][0]
                 if scheme == 'ID3':
                     meta[k] = meta[k].get_text()
+                meta['year'] = str(ID3TimeStamp(meta['date']).year)
             elif k == 'discnumber':
                 if scheme in ['ID3', 'Vorbis']:
                     try:
-                        dn, td = map(int, audio[TAG_MAP[scheme][k]][0].split('/'))
-                        meta[k] = dn
-                        if td > 0:
-                            meta['totaldiscs'] = td
+                        meta[k], meta['totaldiscs'] = map(int, audio[TAG_MAP[scheme][k]][0].split('/'))
                     except ValueError:
                         meta[k] = int(audio[TAG_MAP[scheme][k]][0])
+                        meta['totaldiscs'] = 0
                 elif scheme == 'MP4':
                     try:
-                        dn, td = audio[TAG_MAP[scheme][k]][0]
-                        meta[k] = dn
-                        if td > 0:
-                            meta['totaldiscs'] = td
+                        meta[k], meta['totaldiscs'] = audio[TAG_MAP[scheme][k]][0]
                     except ValueError:
                         meta[k] = audio[TAG_MAP[scheme][k]][0]
+                        meta['totaldiscs'] = 0
             elif k == 'tracknumber':
                 if scheme in ['ID3', 'Vorbis']:
                     try:
-                        tn, tt = map(int, audio[TAG_MAP[scheme][k]][0].split('/'))
-                        meta[k] = tn
-                        if tt > 0:
-                            meta['totaltracks'] = tt
+                        meta[k], meta['totaltracks'] = map(int, audio[TAG_MAP[scheme][k]][0].split('/'))
                     except ValueError:
                         meta[k] = int(audio[TAG_MAP[scheme][k]][0])
+                        meta['totaltracks'] = 0
                 elif scheme == 'MP4':
                     try:
-                        tn, tt = audio[TAG_MAP[scheme][k]][0]
-                        meta[k] = tn
-                        if tt > 0:
-                            meta['totaltracks'] = tt
+                        meta[k], meta['totaltracks'] = audio[TAG_MAP[scheme][k]][0]
                     except ValueError:
                         meta[k] = audio[TAG_MAP[scheme][k]][0]
+                        meta['totaltracks'] = 0
             elif k in ['totaldiscs', 'disctotal']:
                 meta['totaldiscs'] = int(audio[TAG_MAP[scheme][k]][0])
             elif k in ['totaltracks', 'tracktotal']:
                 meta['totaltracks'] = int(audio[TAG_MAP[scheme][k]][0])
             elif k == 'year':
-                meta['date'] = ID3TimeStamp(audio[TAG_MAP[scheme][k]][0]).get_text()
+                meta[k] = str(ID3TimeStamp(audio[TAG_MAP[scheme][k]][0]).year)
+                if 'date' not in meta:
+                    meta['date'] = ID3TimeStamp(audio[TAG_MAP[scheme][k]][0]).get_text()
             elif k == 'compilation':
                 meta[k] = bool(int(audio[TAG_MAP[scheme][k]][0]))
             elif scheme == 'MP4' and TAG_MAP[scheme][k].startswith('----'):
@@ -279,66 +263,96 @@ def load_tags(audio_file):
                 meta[k] = list(map(MP4FreeForm.decode, audio[TAG_MAP[scheme][k]]))
             elif scheme == 'ID3':
                 meta[k] = audio[TAG_MAP[scheme][k]].text
-            elif k in ['performer', 'composer', 'conductor', 'lyricist', 'genre', 'comment']: ## reference: http://age.hobba.nl/audio/mirroredpages/ogg-tagging.html
-                meta[k] = audio[TAG_MAP[scheme][k]]
+            elif k == 'genre':
+                if scheme == 'ID3':
+                    meta[k] = audio[TAG_MAP[scheme][k]].genres
+                else:
+                    meta[k] = audio[TAG_MAP[scheme][k]]
             else:
-                meta[k] = audio[TAG_MAP[scheme][k]][0]
+                meta[k] = audio[TAG_MAP[scheme][k]]
         if k == 'comment':
             if scheme == 'ID3':
                 id3_comm = []
                 for kk in audio.keys():
-                    print(kk)
                     if kk.lower().startswith('comm'):
-                        id3_comm += list(map(str.splitlines,audio[kk].text))
+                        id3_comm += audio[kk].text
                 meta[k] = id3_comm
-            else:
+            elif TAG_MAP[scheme][k] in audio.keys():
                 meta[k] = audio[TAG_MAP[scheme][k]]
     return meta
 
-def copy_tags(src, dest, keys=DEFAULT_TAG_KEYS):
-    """Copy tags from source audio file to destined audio file.
+def save_tags(meta, audio_file):
+    """Save metadata to specified audio file.
 """
-    if src.lower().endswith('.dsf'):
-        src_metadata = DSF(src)
-        src_scheme = 'ID3'
-    elif src.lower().endswith('.flac'):
-        src_metadata = FLAC(src)
-        src_scheme = 'Vorbis'
-    elif src.lower().endswith('.m4a'):
-        src_metadata = MP4(src)
-        src_scheme = 'MP4'
-    elif src.lower().endswith('.mp3'):
-        src_metadata = ID3(src)
-        src_scheme = 'ID3'
+    if audio_file.lower().endswith('.dsf'):
+        audio = DSF(audio_file)
+        scheme = 'ID3'
+    elif audio_file.lower().endswith('.flac'):
+        audio = FLAC(audio_file)
+        scheme = 'Vorbis'
+    elif audio_file.lower().endswith('.m4a'):
+        audio = MP4(audio_file)
+        scheme = 'MP4'
+    elif audio_file.lower().endswith('.mp3'):
+        audio = MP3(audio_file)
+        scheme ='ID3'
     else:
-        raise TypeError(u'unsupported audio file format {}.'.format(src))
-    if dest.lower().endswith('.dsf'):
-        dest_metadata = DSF(dest)
-        dest_scheme = 'ID3'
-    elif dest.lower().endswith('.flac'):
-        dest_metadata = FLAC(dest)
-        dest_scheme = 'Vorbis'
-    elif dest.lower().endswith('.m4a'):
-        dest_metadata = MP4(dest)
-        dest_scheme = 'MP4'
-    elif dest.lower().endswith('.mp3'):
-        dest_metadata = ID3(dest)
-        dest_scheme = 'ID3'
-    else:
-        raise TypeError(u'unsupported audio file format {}.'.format(dest))
-    for k in keys:
-        if TAG_MAP[src_scheme][k] in src_metadata:
-            if k == 'date' and src_scheme == 'ID3':
-                dest_metadata[TAG_MAP[dest_scheme]['date']] = map(ID3TimeStamp.get_text, src_metadata[TAG_MAP['ID3']['date']])
-            elif k == 'isrc' and src_scheme == 'ID3':
-                dest_metadata[TAG_MAP[dest_scheme]['isrc']] = ''.join(src_metadata[TAG_MAP['ID3']['isrc']]).encode('utf-8')
+        raise TypeError(u'unsupported audio file format {}.'.format(audio_file))
+    for k in meta:
+        if k in TAG_MAP[scheme]:
+            if k == 'date':
+                if scheme == 'ID3':
+                    audio[TAG_MAP[scheme][k]] = ID3TimeStamp(meta[k])
+                else:
+                    audio[TAG_MAP[scheme][k]] = meta[k]
+            elif k == 'discnumber':
+                if scheme == 'ID3':
+                    if meta['totaldiscs'] > 0:
+                        audio[TAG_MAP[scheme][k]] = '{:d}/{:d}'.format(meta[k], meta['totaldiscs'])
+                    else:
+                        audio[TAG_MAP[scheme][k]] = '{:d}'.format(meta[k])
+                elif scheme == 'MP4':
+                    audio[TAG_MAP[scheme][k]] = [(meta[k], meta['totaldiscs'])]
+                else:
+                    audio[TAG_MAP[scheme][k]] = '{:d}'.format(meta[k])
+            elif k == 'tracknumber':
+                if scheme == 'ID3':
+                    if meta['totaltracks'] > 0:
+                        audio[TAG_MAP[scheme][k]] = '{:d}/{:d}'.format(meta[k], meta['totaltracks'])
+                    else:
+                        audio[TAG_MAP[scheme][k]] = '{:d}'.format(meta[k])
+                elif scheme == 'MP4':
+                    audio[TAG_MAP[scheme][k]] = [(meta[k], meta['totaltracks'])]
+                else:
+                    audio[TAG_MAP[scheme][k]] = '{:d}'.format(meta[k])
+            elif k in ['totaldiscs', 'totaltracks']:
+                if scheme == 'Vorbis' and meta[k] > 0:
+                    audio[TAG_MAP[scheme][k]] = '{:d}'.format(meta[k])
+            elif k == 'compilation':
+                if scheme == 'MP4':
+                    audio[TAG_MAP[scheme][k]] = int(meta[k])
+                else:
+                    audio[TAG_MAP[scheme][k]] = str(int(meta[k]))
+            elif TAG_MAP[scheme][k].startswith('----'):
+                audio[TAG_MAP[scheme][k]] = list(map(lambda x:MP4FreeForm(x.encode('utf-8')), meta[k]))
             else:
                 try:
-                    dest_metadata[TAG_MAP[dest_scheme][k]] = src_metadata[TAG_MAP[src_scheme][k]]
+                    audio[TAG_MAP[scheme][k]] = meta[k]
                 except TypeError:
                     print(k)
                     raise TypeError()
-    dest_metadata.save()
+    audio.save()
+    return
+
+def copy_tags(src, dest, keys=None):
+    """Copy tags from source audio file to destined audio file.
+"""
+    meta = load_tags(src)
+    try:
+        tags = {k:meta[k] for k in keys}
+    except TypeError:
+        tags = meta
+    save_tags(tags, dest)
     return
 
 def genpath(s):
@@ -417,19 +431,7 @@ def get_discnumber(tags, scheme):
     return int(dn)
 
 def get_source_file_checksum(audio_file):
-    extname = path.splitext(audio_file)[1]
-    if extname.lower() == '.flac':
-        metadata = FLAC(audio_file)
-        scheme = 'Vorbis'
-    elif extname.lower() in ['.dsf', '.mp3']:
-        metadata = FLAC(audio_file)
-        scheme = 'ID3'
-    elif extname.lower() == '.m4a':
-        metadata = MP4(audio_file)
-        scheme = 'MP4'
-    else:
-        raise TypeError(u'unsupported audio format {}.'.format(extname))
-    for cmtline in metadata.tags[TAG_MAP[scheme]['comment']]:
+    for cmtline in '\n'.join(load_tags(audio_file)['comment']).splitlines():
         if 'Source Checksum Program: ' in cmtline:
             prog = cmtline.split(':')[1].strip()
         elif 'Source File Checksum: ' in cmtline:
@@ -437,28 +439,28 @@ def get_source_file_checksum(audio_file):
     return {'program': prog, 'checksum': csum}
 
 def set_source_file_checksum(audio_file, csum, program=DEFAULT_CHECKSUM_PROG):
-    extname = path.splitext(audio_file)[1]
-    if extname.lower() == '.flac':
+    if  audio_file.lower().endswith('.flac'):
         metadata = FLAC(audio_file)
         scheme = 'Vorbis'
-    elif extname.lower() in ['.dsf', '.mp3']:
-        metadata = FLAC(audio_file)
+    elif audio_file.lower().endswith('.dsf'):
+        metadata = DSF(audio_file)
         scheme = 'ID3'
-    elif extname.lower() == '.m4a':
+    elif audio_file.lower().endswith('.mp3'):
+        metadata = MP3(audio_file)
+        scheme = 'ID3'
+    elif audio_file.lower().endswith('.m4a'):
         metadata = MP4(audio_file)
         scheme = 'MP4'
     else:
-        raise TypeError(u'unsupported audio format {}.'.format(extname))
+        raise TypeError(u'unsupported audio format {}.'.format(audio_file))
     if TAG_MAP[scheme]['comment'] in metadata.tags.keys():
-        metadata.tags[TAG_MAP[scheme]['comment']] += [
+        metadata.tags[TAG_MAP[scheme]['comment']].append('\n'.join([
             u'Source Checksum Program: {}'.format(program),
-            u'Source File Checksum: {}'.format(csum)
-        ]
+            u'Source File Checksum: {}'.format(csum)]))
     else:
-        metadata.tags[TAG_MAP[scheme]['comment']]  = [
+        metadata.tags[TAG_MAP[scheme]['comment']] = '\n'.join([
             u'Source Checksum Program: {}'.format(program),
-            u'Source File Checksum: {}'.format(csum)
-        ]
+            u'Source File Checksum: {}'.format(csum)])
     metadata.save()
     return
 
@@ -494,13 +496,13 @@ def check_converter_args(*args):
 def dsd_to_aiff(infile, outfile, preset=''):
     arg = ['ffmpeg', '-y', '-i', infile]
     if preset.lower() in ['dxd', '384khz/24bit', '384/24', '354.8khz/24bit', '354.8/24']:
-        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=354800', '-c:a', 'pcm_s24be']
+        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=354800', '-af', 'volume=+6dB', '-c:a', 'pcm_s24be']
     elif preset.lower() in ['192khz/24bit', '192/24', '176.4khz/24bit', '176.4/24']:
-        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=176400', '-c:a', 'pcm_s24be']
+        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=176400', '-af', 'volume=+6dB', '-c:a', 'pcm_s24be']
     elif preset.lower() in ['ldac', 'hi-res', 'hires', '96khz/24bit', '96/24', '88.2khz/24bit', '88.2/24']:
-        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=88200',  '-c:a', 'pcm_s24be']
+        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=88200',  '-af', 'volume=+6dB', '-c:a', 'pcm_s24be']
     elif preset.lower() in ['cd', '48khz/24bit', '48/24', '44.1khz/24bit', '44.1/24']:
-        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=44100',  '-c:a', 'pcm_s24be']
+        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=44100',  '-af', 'volume=+6dB', '-c:a', 'pcm_s24be']
     arg += ['-f', 'aiff', outfile]
     run(arg, stdout=DEVNULL, stderr=DEVNULL, check=True)
     return
@@ -554,11 +556,11 @@ def dsd_to_itunes(*args):
     with TemporaryDirectory(dir=outdir) as tmpdir:
         aiff = path.join(tmpdir, 'a.aif')
         caff = path.join(tmpdir, 'a.caf')
-        m4a  = path.join(tmpdir, 'a.m4a')
+##        m4a  = path.join(tmpdir, 'a.m4a')
         dsd_to_aiff(infile, aiff)
         convert_to_caff(aiff, caff)
-        caff_to_m4a(caff, m4a)
-        tag_m4a(infile, m4a, None, outfile)
+        caff_to_m4a(caff, outfile)
+##        tag_m4a(infile, m4a, None, outfile)
     return
 
 def dsd_to_flac(*args, preset='dxd', compression='-5'):
@@ -570,16 +572,23 @@ def dsd_to_flac(*args, preset='dxd', compression='-5'):
         run(['flac', compression, aiff, '-o', flac], check=True)
     return
 
+def flac_downsample(infile, sample_rate, outfile):
+    p1 = Popen(['flac', infile, '-d'])
+        run([
+            'ffmpeg', '-y', '-i', infile,
+            ''
+        ], check=True, stdout=DEVNULL, stderr=DEVNULL)
+    
 def flac_to_itunes(*args):
     """Convert FLAC audio file to iTunes Plus AAC audio file.
 """
     infile, outfile, outdir = check_converter_args(*args)
     with TemporaryDirectory(dir=outdir) as tmpdir:
         caff = path.join(tmpdir, 'a.caf')
-        m4a  = path.join(tmpdir, 'a.m4a')
+##        m4a  = path.join(tmpdir, 'a.m4a')
         convert_to_caff(infile, caff)
-        caff_to_m4a(caff, m4a)
-        tag_m4a(infile, m4a, None, outfile)
+        caff_to_m4a(caff, outfile)
+##        tag_m4a(infile, m4a, None, outfile)
     return
 
 def find_tracks(srcdir):
@@ -754,7 +763,7 @@ class AudioTrack(object):
             pass
         else:
             raise TypeError(u'unsupported preset {}.'.format(preset))
-##        copy_tags(self.source, filepath)
+        copy_tags(self.source, filepath)
         add_cover_art(
             filepath,
             path.join(
