@@ -572,13 +572,6 @@ def dsd_to_flac(*args, preset='dxd', compression='-5'):
         run(['flac', compression, aiff, '-o', flac], check=True)
     return
 
-def flac_downsample(infile, sample_rate, outfile):
-    p1 = Popen(['flac', infile, '-d'])
-        run([
-            'ffmpeg', '-y', '-i', infile,
-            ''
-        ], check=True, stdout=DEVNULL, stderr=DEVNULL)
-    
 def flac_to_itunes(*args):
     """Convert FLAC audio file to iTunes Plus AAC audio file.
 """
@@ -634,6 +627,19 @@ def metadata_from_path(p):
     m['albumartist'] = artname
     m['album'] = albname
     return m
+
+def gen_flac_tagopts(tags):
+    """Generate FLAC Tagging options.
+"""
+    opts = []
+    for k in tags:
+        if k in TAG_MAP['Vorbis']:
+            try:
+                for opt in [['-T', '{}=\"{}\"'.format(TAG_MAP['Vorbis'][k].upper(), v)] for v in tags[k]]:
+                    opts += opt
+            except TypeError:
+                opts += ['-T', '{}=\"{}\"'.format(TAG_MAP['Vorbis'][k].upper(), tags[k])]
+    return opts
 
 class AudioTrack(object):
     def __init__(self, filepath):
@@ -747,7 +753,23 @@ class AudioTrack(object):
                 if self.file_checksum == get_source_file_checksum(filepath):
                     return
         if preset.lower() in ['dxd']:
-            pass
+            if self.format == 'DSD':
+                ## dsf ------> aiff ----> flac
+                ##     ffmpeg       flac
+                if self.metadata['info']['sample_rate']>8.5e6:
+                    sample_rate=354800
+                else:
+                    sample_rate=176400
+                p1 = Popen([
+                    'ffmpeg', '-y', '-i', self.source,
+                    '-af', 'aresample=resampler=soxr:precision=28:dither_method=triangular:osr={:d}'.format(sample_rate),
+                    '-af', 'volume=+6dB',
+                    '-c:a', 'pcm_s24be',
+                    '-f', 'aiff', '-'
+                ], check=True, stdout=PIPE, stderr=DEVNULL)
+                p2 = Popen([
+                    'flac', '-', '-V',
+                ], check=True, stdin=p1.stdout, stdout=DEVNULL, stderr=DEVNULL)
         elif preset.lower() in ['ldac']:
             pass
         elif preset.lower() in ['cd']:
@@ -755,10 +777,8 @@ class AudioTrack(object):
         elif preset.lower() in ['itunes']:
             if self.format == 'DSD':
                 dsd_to_itunes(self.source, filepath)
-            elif self.format == 'FLAC':
-                flac_to_itunes(self.source, filepath)
             else:
-                raise TypeError(u'Format not supported yet.')
+                flac_to_itunes(self.source, filepath)
         elif preset.lower() in ['radio']:
             pass
         else:
