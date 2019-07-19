@@ -44,11 +44,12 @@ import signal
 import pickle
 import warnings
 import csv
+import shutil
 from mutagen.mp3 import MP3
 from mutagen.dsf import DSF
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
-from mutagen.id3 import ID3, APIC, ID3TimeStamp
+from mutagen.id3 import ID3, APIC, ID3TimeStamp, TextFrame, COMM
 from multiprocessing import cpu_count, Pool
 from time import time
 from os import path
@@ -186,7 +187,8 @@ PRESETS = {
         'bitrate'             :    128, ## in kbits/s
         'format'              :  'MP3',
         'extension'           :  'mp3',
-        'art_format'          : 'none'
+        'art_format'          : 'jpeg',
+        'art_resolution'      :  '200'
     }
 }
 
@@ -302,15 +304,15 @@ def save_tags(meta, audio_file):
         if k in TAG_MAP[scheme]:
             if k == 'date':
                 if scheme == 'ID3':
-                    audio[TAG_MAP[scheme][k]] = ID3TimeStamp(meta[k])
+                    audio[TAG_MAP[scheme][k]] = TextFrame(encoding=3, text=[ID3TimeStamp(meta[k])])
                 else:
                     audio[TAG_MAP[scheme][k]] = meta[k]
             elif k == 'discnumber':
                 if scheme == 'ID3':
                     if meta['totaldiscs'] > 0:
-                        audio[TAG_MAP[scheme][k]] = '{:d}/{:d}'.format(meta[k], meta['totaldiscs'])
+                        audio[TAG_MAP[scheme][k]] = TextFrame(encoding=3, text=['{:d}/{:d}'.format(meta[k], meta['totaldiscs'])])
                     else:
-                        audio[TAG_MAP[scheme][k]] = '{:d}'.format(meta[k])
+                        audio[TAG_MAP[scheme][k]] = TextFrame(encoding=3, text=['{:d}'.format(meta[k])])
                 elif scheme == 'MP4':
                     audio[TAG_MAP[scheme][k]] = [(meta[k], meta['totaldiscs'])]
                 else:
@@ -318,9 +320,9 @@ def save_tags(meta, audio_file):
             elif k == 'tracknumber':
                 if scheme == 'ID3':
                     if meta['totaltracks'] > 0:
-                        audio[TAG_MAP[scheme][k]] = '{:d}/{:d}'.format(meta[k], meta['totaltracks'])
+                        audio[TAG_MAP[scheme][k]] = TextFrame(encoding=3, text=['{:d}/{:d}'.format(meta[k], meta['totaltracks'])])
                     else:
-                        audio[TAG_MAP[scheme][k]] = '{:d}'.format(meta[k])
+                        audio[TAG_MAP[scheme][k]] = TextFrame(encoding=3, text=['{:d}'.format(meta[k])])
                 elif scheme == 'MP4':
                     audio[TAG_MAP[scheme][k]] = [(meta[k], meta['totaltracks'])]
                 else:
@@ -331,16 +333,17 @@ def save_tags(meta, audio_file):
             elif k == 'compilation':
                 if scheme == 'MP4':
                     audio[TAG_MAP[scheme][k]] = int(meta[k])
+                elif scheme == 'ID3':
+                    audio[TAG_MAP[scheme][k]] = TextFrame(encoding=3, text=[str(int(meta[k]))])
                 else:
                     audio[TAG_MAP[scheme][k]] = str(int(meta[k]))
             elif TAG_MAP[scheme][k].startswith('----'):
                 audio[TAG_MAP[scheme][k]] = list(map(lambda x:MP4FreeForm(x.encode('utf-8')), meta[k]))
             else:
-                try:
+                if scheme == 'ID3':
+                    audio[TAG_MAP[scheme][k]] = TextFrame(encoding=3, text=[meta[k]])
+                else:
                     audio[TAG_MAP[scheme][k]] = meta[k]
-                except TypeError:
-                    print(k)
-                    raise TypeError()
     audio.save()
     return
 
@@ -453,14 +456,26 @@ def set_source_file_checksum(audio_file, csum, program=DEFAULT_CHECKSUM_PROG):
         scheme = 'MP4'
     else:
         raise TypeError(u'unsupported audio format {}.'.format(audio_file))
-    if TAG_MAP[scheme]['comment'] in metadata.tags.keys():
-        metadata.tags[TAG_MAP[scheme]['comment']].append('\n'.join([
-            u'Source Checksum Program: {}'.format(program),
-            u'Source File Checksum: {}'.format(csum)]))
+    if scheme=='ID3':
+        if TAG_MAP[scheme]['comment'] in metadata.tags.keys():
+            metadata.tags[TAG_MAP[scheme]['comment']] = COMM(encoding=3, text=['\n'.join([
+                metadata.tags[TAG_MAP[scheme]['comment']][0],
+                u'Source Checksum Program: {}'.format(program),
+                u'Source File Checksum: {}'.format(csum)])])
+        else:
+            metadata.tags[TAG_MAP[scheme]['comment']] = COMM(encoding=3, text=['\n'.join([
+                u'Source Checksum Program: {}'.format(program),
+                u'Source File Checksum: {}'.format(csum)])])
     else:
-        metadata.tags[TAG_MAP[scheme]['comment']] = '\n'.join([
-            u'Source Checksum Program: {}'.format(program),
-            u'Source File Checksum: {}'.format(csum)])
+        if TAG_MAP[scheme]['comment'] in metadata.tags.keys():
+            metadata.tags[TAG_MAP[scheme]['comment']] = ['\n'.join([
+                metadata.tags[TAG_MAP[scheme]['comment']][0],
+                u'Source Checksum Program: {}'.format(program),
+                u'Source File Checksum: {}'.format(csum)])]
+        else:
+            metadata.tags[TAG_MAP[scheme]['comment']] = '\n'.join([
+                u'Source Checksum Program: {}'.format(program),
+                u'Source File Checksum: {}'.format(csum)])
     metadata.save()
     return
 
@@ -496,13 +511,13 @@ def check_converter_args(*args):
 def dsd_to_aiff(infile, outfile, preset=''):
     arg = ['ffmpeg', '-y', '-i', infile]
     if preset.lower() in ['dxd', '384khz/24bit', '384/24', '354.8khz/24bit', '354.8/24']:
-        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=354800', '-af', 'volume=+6dB', '-c:a', 'pcm_s24be']
+        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=352800,volume=+6dB', '-c:a', 'pcm_s24be']
     elif preset.lower() in ['192khz/24bit', '192/24', '176.4khz/24bit', '176.4/24']:
-        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=176400', '-af', 'volume=+6dB', '-c:a', 'pcm_s24be']
+        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=176400,volume=+6dB', '-c:a', 'pcm_s24be']
     elif preset.lower() in ['ldac', 'hi-res', 'hires', '96khz/24bit', '96/24', '88.2khz/24bit', '88.2/24']:
-        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=88200',  '-af', 'volume=+6dB', '-c:a', 'pcm_s24be']
+        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=88200,volume=+6dB',  '-c:a', 'pcm_s24be']
     elif preset.lower() in ['cd', '48khz/24bit', '48/24', '44.1khz/24bit', '44.1/24']:
-        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=44100',  '-af', 'volume=+6dB', '-c:a', 'pcm_s24be']
+        arg += ['-af', 'aresample=resampler=soxr:precision=32:dither_method=triangular:osr=44100,volume=+6dB',  '-c:a', 'pcm_s24be']
     arg += ['-f', 'aiff', outfile]
     run(arg, stdout=DEVNULL, stderr=DEVNULL, check=True)
     return
@@ -634,11 +649,11 @@ def gen_flac_tagopts(tags):
     opts = []
     for k in tags:
         if k in TAG_MAP['Vorbis']:
-            try:
-                for opt in [['-T', '{}=\"{}\"'.format(TAG_MAP['Vorbis'][k].upper(), v)] for v in tags[k]]:
+            if isinstance(tags[k], list):
+                for opt in [['-T', '{}={}'.format(TAG_MAP['Vorbis'][k].upper(), v)] for v in tags[k]]:
                     opts += opt
-            except TypeError:
-                opts += ['-T', '{}=\"{}\"'.format(TAG_MAP['Vorbis'][k].upper(), tags[k])]
+            else:
+                opts += ['-T', '{}={}'.format(TAG_MAP['Vorbis'][k].upper(), tags[k])]
     return opts
 
 class AudioTrack(object):
@@ -752,45 +767,88 @@ class AudioTrack(object):
                 ## update
                 if self.file_checksum == get_source_file_checksum(filepath):
                     return
-        if preset.lower() in ['dxd']:
+        if preset.lower() in ['dxd', 'ldac', 'cd']:
             if self.format == 'DSD':
                 ## dsf ------> aiff ----> flac
                 ##     ffmpeg       flac
-                if self.metadata['info']['sample_rate']>8.5e6:
-                    sample_rate=354800
+                if self.metadata['info']['sample_rate'] > PRESETS[preset]['max_sample_rate']//48000*44100*16:
+                    sample_rate=PRESETS[preset]['max_sample_rate']//48000*44100
                 else:
-                    sample_rate=176400
-                p1 = Popen([
+                    sample_rate=self.metadata['info']['sample_rate']//44100//16*44100
+                ffmpeg = Popen([
                     'ffmpeg', '-y', '-i', self.source,
-                    '-af', 'aresample=resampler=soxr:precision=28:dither_method=triangular:osr={:d}'.format(sample_rate),
-                    '-af', 'volume=+6dB',
+                    '-af', 'aresample=resampler=soxr:precision=28:dither_method=triangular:osr={:d},volume=+6dB'.format(sample_rate),
+                    '-vn', '-map_metadata', '-1',
                     '-c:a', 'pcm_s24be',
                     '-f', 'aiff', '-'
-                ], check=True, stdout=PIPE, stderr=DEVNULL)
-                p2 = Popen([
-                    'flac', '-', '-V',
-                ], check=True, stdin=p1.stdout, stdout=DEVNULL, stderr=DEVNULL)
-        elif preset.lower() in ['ldac']:
-            pass
-        elif preset.lower() in ['cd']:
-            pass
+                ], stdout=PIPE, stderr=DEVNULL)
+                flac_enc = Popen([
+                    'flac', '-', '-f',
+                    '--picture', '3|image/png|Cover||{}'.format(path.join(path.split(filepath)[0], 'cover.png')),
+                    '--ignore-chunk-sizes', '--force-aiff-format',
+                    *gen_flac_tagopts(self.metadata),
+                    '-o', filepath
+                ], stdin=ffmpeg.stdout, stderr=DEVNULL)
+                flac_enc.communicate()
+            else:
+                q = self.metadata['info']['sample_rate'] // 44100
+                b = self.metadata['info']['sample_rate'] // q
+                if q > PRESETS[preset]['max_sample_rate']//48000:
+                    sample_rate = PRESETS[preset]['max_sample_rate']//48000*b
+                    ## resample is required.
+                    flac_dec = Popen([
+                        'flac', self.source, '-d', '-c'
+                    ], stdout=PIPE, stderr=DEVNULL)
+                    ffmpeg = Popen([
+                        'ffmpeg', '-i', '-',
+                        '-af', 'aresample=resampler=soxr:precision=28:dither_method=triangular:osr={:d}'.format(sample_rate),
+                        '-vn', '-map_metadata', '-1',
+                        '-c:a', 'pcm_s24be',
+                        '-f', 'aiff', '-'
+                    ], stdin=flac_dec.stdout, stdout=PIPE, stderr=DEVNULL)
+                    flac_enc = Popen([
+                        'flac', '-', '-f',
+                        '--picture', '3|image/png|Cover||{}'.format(path.join(path.split(filepath)[0], 'cover.png')),
+                        '--ignore-chunk-sizes', '--force-aiff-format',
+                        *gen_flac_tagopts(self.metadata),
+                        '-o', filepath
+                    ], stdin=ffmpeg.stdout, stdout=DEVNULL, stderr=DEVNULL)
+                    flac_enc.communicate()
+                else:
+                    shutil.copyfile(self.source, filepath)
+                    ## substitute cover art
+                    audio = FLAC(filepath)
+                    audio.clear_pictures()
+                    audio.save()
+                    add_cover_art(filepath, path.join(path.split(filepath)[0], 'cover.png'))
         elif preset.lower() in ['itunes']:
             if self.format == 'DSD':
                 dsd_to_itunes(self.source, filepath)
             else:
                 flac_to_itunes(self.source, filepath)
-        elif preset.lower() in ['radio']:
-            pass
-        else:
-            raise TypeError(u'unsupported preset {}.'.format(preset))
-        copy_tags(self.source, filepath)
-        add_cover_art(
-            filepath,
-            path.join(
+            copy_tags(self.source, filepath)
+            add_cover_art(filepath, path.join(
                 path.split(filepath)[0],
                 'cover.{}'.format(PRESETS[preset]['art_format'])
-            )
-        )
+            ))
+        elif preset.lower() in ['radio']:
+            q = self.metadata['info']['sample_rate']//44100
+            b = self.metadata['info']['sample_rate']//q
+            if self.format == 'DSD':
+                gain = ',volume=+6dB'
+            else:
+                gain = ''
+            run([
+                'ffmpeg', '-y', '-i', self.source,
+                '-af', 'aresample=resampler=soxr:precision=24:dither_method=triangular:osr={:d}{}'.format(b, gain),
+                '-vn', '-c:a', 'libmp3lame', '-b:a', '{:d}k'.format(PRESETS[preset]['bitrate']), filepath
+            ], check=True, stdout=DEVNULL, stderr=DEVNULL)
+            add_cover_art(filepath, path.join(
+                path.split(filepath)[0],
+                'cover.{}'.format(PRESETS[preset]['art_format'])
+            ))
+        else:
+            raise TypeError(u'unsupported preset {}.'.format(preset))
         set_source_file_checksum(
             filepath,
             self.file_checksum['checksum'],
@@ -922,7 +980,7 @@ class Library(object):
                     args = [
                         'convert',
                         path.join(self.arts_path, '{}.png'.format(a.id)),
-                        '-resize', '{:d}px\\>'.format(PRESETS[preset]['art_resolution']),
+                        '-resize', '{:d}x{:d}\\>x'.format(PRESETS[preset]['art_resolution'], PRESETS[preset]['art_resolution']),
                         path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
                     ]
                 except ValueError:
@@ -941,7 +999,7 @@ class Library(object):
             if artist_match in t.metadata['albumartist'] and album_match in t.metadata['album'] and track_match in t.GenFilename():
                 tracks.append(t)
                 to_path.append(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']))
-                ## t.Export(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']), preset, exists)
+#                t.Export(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']), preset, exists)
         with Pool(processes = cpu_count()//2) as pool:
             pool.starmap(AudioTrack.Export, zip(tracks, to_path, [preset]*len(tracks), [exists]*len(tracks)))
             run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
