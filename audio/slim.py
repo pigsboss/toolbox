@@ -18,6 +18,9 @@ Actions:
   export
     Export SONY Music Library to specified audio format.
 
+  update
+    Re-scan filesystem and update SONY Music Library.
+
 Options:
   -v  verbose.
   -s  source (SONY Music Library) path.
@@ -892,7 +895,7 @@ class Album(list):
 class Library(object):
     """SONY Music Library.
 """
-    def build(self, libroot, outdir):
+    def Build(self, libroot, outdir):
         """Build SONY Music Library from source directory.
 """
         self.source = path.normpath(path.abspath(libroot))
@@ -959,7 +962,8 @@ class Library(object):
     def Update(self):
         """Update pre-built SONY Music Library.
 """
-        tracks = find_tracks(self.source_path)
+        tracks = find_tracks(self.source)
+        
         return
 
     def Export(self, match=None, prefix=None, preset='dxd', exists='skip', verbose=False):
@@ -1072,7 +1076,7 @@ def main():
     if action.lower() in ['build']:
         outdir = path.normpath(path.abspath(args[0]))
         l = Library()
-        l.build(srcdir, path.abspath(outdir))
+        l.Build(srcdir, path.abspath(outdir))
         save_library(l, path.join(outdir, 'main.db'))
     elif action.lower() in ['help']:
         print(__doc__)
