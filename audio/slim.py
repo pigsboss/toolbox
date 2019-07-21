@@ -605,13 +605,14 @@ def flac_to_itunes(*args):
 def find_tracks(srcdir):
     """Find all SONY Music tracks (*.flac and *.dsf).
 """
-    result = run(['find', path.abspath(srcdir), '-type', 'f',
-                  '-name', '*.flac', '-or', '-name', '*.dsf'
+    result = run([
+        'find', path.abspath(srcdir), '-type', 'f',
+        '-name', '*.flac', '-or', '-name', '*.dsf'
     ], check=True, stdout=PIPE, stderr=DEVNULL)
     tracks = []
     for p in result.stdout.decode().splitlines():
         if path.isfile(p):
-            tracks.append(p)
+            tracks.append(path.normpath(path.abspath(p)))
     return tracks
 
 def metadata_from_path(p):
@@ -665,6 +666,10 @@ class AudioTrack(object):
         if not path.isfile(filepath):
             raise FileNotFoundError(u'Audio track file does not exist.'.format(filepath))
         self.source = path.normpath(path.abspath(filepath))
+        self.file = {
+            'size'  : path.getsize(self.source),
+            'ctime' : path.getctime(self.source)
+        }
         extname = path.splitext(self.source)[1]
         if extname.lower() in ['.dsf']:
             self.format = 'DSD'
@@ -860,10 +865,11 @@ class AudioTrack(object):
         return
 
     def ExtractCoverArt(self, filepath):
-        run(['ffmpeg', '-y', '-i', self.source,
-             '-an', '-c:v', 'png', filepath
-        ], check=True, stdout=DEVNULL, stderr=DEVNULL)
-        
+        if not path.isfile(filepath):
+            run(['ffmpeg', '-y', '-i', self.source,
+                 '-an', '-c:v', 'png', filepath
+            ], check=True, stdout=DEVNULL, stderr=DEVNULL)
+        return
 
     def Print(self):
         print('    {:<20}: {:<80}'.format('Source',                self.source))
@@ -910,8 +916,9 @@ class Library(object):
         self.arts_path = path.join(outdir, 'arts')
         self.checksum_path = path.join(outdir, '{}.txt'.format(DEFAULT_CHECKSUM_PROG))
         self.ImportTracks(tracks)
+        self.UpdateAlbums()
         self.ExtractCoverArts()
-        self.SaveChecksum()
+        print(u'{:d} audio tracks of {:d} album(s) loaded.'.format(len(self.tracks), len(self.albums)))
         return
 
     def ImportTracks(self, tracks):
@@ -921,21 +928,38 @@ class Library(object):
         new_tracks = []
         sys.stdout.write(u'Importing audio tracks......')
         sys.stdout.flush()
+        s = cpu_count()*8
+        ntrks = len(tracks)
         with Pool(processes=cpu_count()//2) as pool:
-            new_tracks = pool.map(AudioTrack, tracks)
+            n = 0
+            while n < ntrks:
+                nn = min(n+s, ntrks)
+                new_tracks += pool.map(AudioTrack, tracks[n:nn])
+                sys.stdout.write(u'\rImporting audio tracks......{:d}/{:d} ({:5.1f}%)'.format(nn, ntrks, 100.0*nn/ntrks))
+                sys.stdout.flush()
+                n = nn
 ##      for t in tracks:
 ##          new_tracks.append(AudioTrack(t))
         run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
-        sys.stdout.write(u'\rImport audio tracks......Finished. ({:.2f} seconds)\n'.format(time()-tic))
+        sys.stdout.write(u'\rImporting audio tracks......Finished. ({:.2f} seconds)\n'.format(time()-tic))
         sys.stdout.flush()
         for t in new_tracks:
             if t.id not in self.tracks:
                 self.tracks[t.id] = t
-                if t.parent_id not in self.albums:
-                    self.albums[t.parent_id] = Album(title=t.metadata['album'], artist=t.metadata['albumartist'])
-                self.albums[t.parent_id].append(t)
         return
 
+    def UpdateAlbums(self):
+        self.albums = {}
+        tic = time()
+        sys.stdout.write(u'Updating albums......')
+        sys.stdout.flush()
+        for t in self.tracks.values():
+            if t.parent_id not in self.albums:
+                self.albums[t.parent_id] = Album(title=t.metadata['album'], artist=t.metadata['albumartist'])
+            self.albums[t.parent_id].append(t)
+        sys.stdout.write(u'\rUpdating albums......Finished. ({:.2f} seconds)\n'.format(time()-tic))
+        return
+    
     def ExtractCoverArts(self):
         """Extract album cover arts.
 """
@@ -962,8 +986,23 @@ class Library(object):
     def Update(self):
         """Update pre-built SONY Music Library.
 """
-        tracks = find_tracks(self.source)
-        
+        tracks = self.tracks
+        self.tracks = {}
+        for tid in tracks:
+            if path.isfile(tracks[tid].source):
+                self.tracks[tid] = tracks[tid]
+        new_tracks = []
+        src_tracks = {t.source:t.file for t in self.tracks.values()}
+        for t in find_tracks(self.source):
+            if t in src_tracks:
+                if path.getctime(t) > src_tracks[t]['ctime'] or path.getsize(t) != src_tracks[t]['size']:
+                    new_tracks.append(t)
+            else:
+                new_tracks.append(t)
+        self.ImportTracks(new_tracks)
+        self.UpdateAlbums()
+        self.ExtractCoverArts()
+        print(u'{:d} audio tracks of {:d} album(s) loaded.'.format(len(self.tracks), len(self.albums)))
         return
 
     def Export(self, match=None, prefix=None, preset='dxd', exists='skip', verbose=False):
@@ -1003,10 +1042,23 @@ class Library(object):
             if artist_match in t.metadata['albumartist'] and album_match in t.metadata['album'] and track_match in t.GenFilename():
                 tracks.append(t)
                 to_path.append(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']))
-#                t.Export(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']), preset, exists)
+                ## t.Export(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']), preset, exists)
+        s = cpu_count()*8
+        ntrks = len(tracks)
+        tic = time()
         with Pool(processes = cpu_count()//2) as pool:
-            pool.starmap(AudioTrack.Export, zip(tracks, to_path, [preset]*len(tracks), [exists]*len(tracks)))
-            run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
+            n = 0
+            sys.stdout.write(u'Exporting audio tracks......')
+            sys.stdout.flush()
+            while n < ntrks:
+                nn = min(n+s, ntrks)
+                pool.starmap(AudioTrack.Export, zip(tracks[n:nn], to_path[n:nn], [preset]*s, [exists]*s))
+                n = nn
+                run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
+                sys.stdout.write(u'\rExporting audio tracks......{:d}/{:d} ({:5.1f}%)'.format(nn, ntrks, 100.0*nn/ntrks))
+                sys.stdout.flush()
+            sys.stdout.write(u'\rExporting audio tracks......Finished. ({:2f} seconds)\n'.format(time() - tic))
+            sys.stdout.flush()
         return
 
     def Print(self, match=None, verbose=False, output=''):
@@ -1086,6 +1138,9 @@ def main():
     elif action.lower() in ['export']:
         l = load_library(args[0])
         l.Export(match=matched, preset=preset, prefix=path.normpath(path.abspath(output)), exists=exists, verbose=verbose)
+    elif action.lower() in ['update']:
+        l = load_library(args[0])
+        l.Update()
     else:
         assert False, 'unhandled action'
     return
