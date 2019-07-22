@@ -53,7 +53,7 @@ from mutagen.dsf import DSF
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 from mutagen.id3 import ID3, APIC, ID3TimeStamp, TextFrame, COMM
-from multiprocessing import cpu_count, Pool
+from multiprocessing import cpu_count, Pool, Process, Queue
 from time import time
 from os import path
 from getopt import gnu_getopt
@@ -471,10 +471,21 @@ def set_source_file_checksum(audio_file, csum, program=DEFAULT_CHECKSUM_PROG):
                 u'Source File Checksum: {}'.format(csum)])])
     else:
         if TAG_MAP[scheme]['comment'] in metadata.tags.keys():
-            metadata.tags[TAG_MAP[scheme]['comment']] = ['\n'.join([
-                metadata.tags[TAG_MAP[scheme]['comment']][0],
-                u'Source Checksum Program: {}'.format(program),
-                u'Source File Checksum: {}'.format(csum)])]
+            if isinstance(metadata.tags[TAG_MAP[scheme]['comment']], str):
+                cmt = '\n'.join([
+                    metadata.tags[TAG_MAP[scheme]['comment']],
+                    u'Source Checksum Program: {}'.format(program),
+                    u'Source File Checksum: {}'.format(csum)
+                ])
+            elif isinstance(metadata.tags[TAG_MAP[scheme]['comment']], list):
+                cmt = '\n'.join([
+                    '\n'.join(metadata.tags[TAG_MAP[scheme]['comment']]),
+                    u'Source Checksum Program: {}'.format(program),
+                    u'Source File Checksum: {}'.format(csum)
+                ])
+            else:
+                raise TypeError(u'target tag is neither str nor list.')
+            metadata.tags[TAG_MAP[scheme]['comment']] = cmt
         else:
             metadata.tags[TAG_MAP[scheme]['comment']] = '\n'.join([
                 u'Source Checksum Program: {}'.format(program),
@@ -898,6 +909,14 @@ class Album(list):
     def ExtractCoverArt(self, prefix):
         self[0].ExtractCoverArt(path.join(prefix, '{}.png'.format(self.id)))
 
+def __import_worker__(q_in, q_out):
+    pack_in = q_in.get()
+    while pack_in is not None:
+        tfile = pack_in
+        q_out.put(AudioTrack(pack_in))
+        pack_in = q_in.get()
+    return
+
 class Library(object):
     """SONY Music Library.
 """
@@ -926,20 +945,30 @@ class Library(object):
 """
         tic = time()
         new_tracks = []
+        q_file   = Queue()
+        q_obj    = Queue()
+        workers  = []
+        nworkers = max(2, cpu_count())
+        ntrks = len(tracks)
+        for i in range(nworkers):
+            proc = Process(target=__import_worker__, args=(q_file, q_obj))
+            proc.start()
+            workers.append(proc)
         sys.stdout.write(u'Importing audio tracks......')
         sys.stdout.flush()
-        s = cpu_count()*8
-        ntrks = len(tracks)
-        with Pool(processes=cpu_count()//2) as pool:
-            n = 0
-            while n < ntrks:
-                nn = min(n+s, ntrks)
-                new_tracks += pool.map(AudioTrack, tracks[n:nn])
-                sys.stdout.write(u'\rImporting audio tracks......{:d}/{:d} ({:5.1f}%)'.format(nn, ntrks, 100.0*nn/ntrks))
-                sys.stdout.flush()
-                n = nn
-##      for t in tracks:
-##          new_tracks.append(AudioTrack(t))
+        for t in tracks:
+            q_file.put(t)
+        i = 0
+        while i < ntrks:
+            tobj = q_obj.get()
+            self.tracks[tobj.id] = tobj
+            i += 1
+            sys.stdout.write(u'\rImporting audio tracks......{:d}/{:d} ({:5.1f}%)'.format(i, ntrks, 100.0*i/ntrks))
+            sys.stdout.flush()
+        for i in range(nworkers):
+            q_file.put(None)
+        for proc in workers:
+            proc.join()
         run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
         sys.stdout.write(u'\rImporting audio tracks......Finished. ({:.2f} seconds)\n'.format(time()-tic))
         sys.stdout.flush()
@@ -968,7 +997,7 @@ class Library(object):
         tic = time()
         sys.stdout.write('Extracting album cover arts......')
         sys.stdout.flush()
-        with Pool(processes=cpu_count()//2) as pool:
+        with Pool(processes=cpu_count()) as pool:
             pool.starmap(Album.ExtractCoverArt, zip(self.albums.values(), [self.arts_path]*len(self.albums)))
         run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
         sys.stdout.write(u'\rExtracting album cover arts......Finished. ({:.2f} seconds)\n'.format(time()-tic))
@@ -1043,10 +1072,10 @@ class Library(object):
                 tracks.append(t)
                 to_path.append(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']))
                 ## t.Export(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']), preset, exists)
-        s = cpu_count()*8
+        s = cpu_count()
         ntrks = len(tracks)
         tic = time()
-        with Pool(processes = cpu_count()//2) as pool:
+        with Pool(processes = cpu_count()) as pool:
             n = 0
             sys.stdout.write(u'Exporting audio tracks......')
             sys.stdout.flush()
