@@ -1085,11 +1085,11 @@ class Library(object):
         nworkers = cpu_count()
         workers  = []
         for i in range(nworkers):
-            proc = Process(target=__export_worker__, arg=(q_obj, q_out))
+            proc = Process(target=__export_worker__, args=(q_obj, q_out))
             proc.start()
             workers.append(proc)
-        for t in tracks:
-            q_obj.put(t)
+        for i in range(ntrks):
+            q_obj.put((tracks[i], to_path[i], preset, exists))
         tic = time()
         i = 0
         sys.stdout.write(u'Exporting audio tracks......')
