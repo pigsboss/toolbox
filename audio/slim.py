@@ -873,7 +873,7 @@ class AudioTrack(object):
             self.file_checksum['checksum'],
             program=self.file_checksum['program']
         )
-        return
+        return filepath
 
     def ExtractCoverArt(self, filepath):
         if not path.isfile(filepath):
@@ -912,8 +912,15 @@ class Album(list):
 def __import_worker__(q_in, q_out):
     pack_in = q_in.get()
     while pack_in is not None:
-        tfile = pack_in
         q_out.put(AudioTrack(pack_in))
+        pack_in = q_in.get()
+    return
+
+def __export_worker__(q_in, q_out):
+    pack_in = q_in.get()
+    while pack_in is not None:
+        tobj, outfile, preset, exists = pack_in
+        q_out.put(tobj.Export(outfile, preset, exists))
         pack_in = q_in.get()
     return
 
@@ -1072,22 +1079,33 @@ class Library(object):
                 tracks.append(t)
                 to_path.append(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']))
                 ## t.Export(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']), preset, exists)
-        s = cpu_count()
-        ntrks = len(tracks)
+        q_obj    = Queue()
+        q_out    = Queue()
+        ntrks    = len(tracks)
+        nworkers = cpu_count()
+        workers  = []
+        for i in range(nworkers):
+            proc = Process(target=__export_worker__, arg=(q_obj, q_out))
+            proc.start()
+            workers.append(proc)
+        for t in tracks:
+            q_obj.put(t)
         tic = time()
-        with Pool(processes = cpu_count()) as pool:
-            n = 0
-            sys.stdout.write(u'Exporting audio tracks......')
+        i = 0
+        sys.stdout.write(u'Exporting audio tracks......')
+        sys.stdout.flush()
+        while i < ntrks:
+            outfile = q_out.get()
+            i += 1
+            sys.stdout.write(u'\rExporting audio tracks......{:d}/{:d} ({:5.1f}%, {:.2} seconds)'.format(i, ntrks, 100.0*i/ntrks, time()-tic))
             sys.stdout.flush()
-            while n < ntrks:
-                nn = min(n+s, ntrks)
-                pool.starmap(AudioTrack.Export, zip(tracks[n:nn], to_path[n:nn], [preset]*s, [exists]*s))
-                n = nn
-                run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
-                sys.stdout.write(u'\rExporting audio tracks......{:d}/{:d} ({:5.1f}%)'.format(nn, ntrks, 100.0*nn/ntrks))
-                sys.stdout.flush()
-            sys.stdout.write(u'\rExporting audio tracks......Finished. ({:2f} seconds)\n'.format(time() - tic))
-            sys.stdout.flush()
+        for i in range(nworkers):
+            q_obj.put(None)
+        for proc in workers:
+            proc.join()
+        run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
+        sys.stdout.write(u'\rExporting audio tracks......Finished. ({:2f} seconds)\n'.format(time() - tic))
+        sys.stdout.flush()
         return
 
     def Print(self, match=None, verbose=False, output=''):
