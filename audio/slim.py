@@ -974,7 +974,7 @@ class Library(object):
             q_obj.put(None)
         for proc in workers:
             proc.join()
-        sys.stdout.write(u'\r\rExporting audio tracks......Finished. ({:2f} seconds)\n'.format(time() - tic))
+        sys.stdout.write(u'\r\rExporting audio tracks......Finished. ({:.2f} seconds)\n'.format(time() - tic))
         sys.stdout.flush()
         run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
 
