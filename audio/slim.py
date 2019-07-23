@@ -55,7 +55,7 @@ from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 from mutagen.id3 import ID3, APIC, ID3TimeStamp, TextFrame, COMM
 from multiprocessing import cpu_count, Pool, Process, Queue
-from time import time
+from time import time, sleep
 from os import path
 from getopt import gnu_getopt
 from subprocess import run, Popen, PIPE, DEVNULL
@@ -198,6 +198,15 @@ PRESETS = {
 
 DEFAULT_CHECKSUM_PROG = 'sha224sum'
 SAFE_PATH_CHARS = ' _'
+
+def wait_file(filepath, timeout=5.0):
+    t   = 0.0
+    dt  = 0.1
+    tic = time()
+    while (t < timeout) and (not path.isfile(filepath)):
+        sleep(dt)
+        t = time()-tic
+    return path.isfile(filepath)
 
 def load_tags(audio_file):
     """Load tags from audio file.
@@ -676,6 +685,8 @@ class AudioTrack(object):
                     ], check=True, stdout=DEVNULL, stderr=DEVNULL)
                 else:
                     src = self.source
+                if not wait_file(src):
+                    raise FileNotFoundError(u'{} (source) not found.'.format(src))
                 caff = path.join(tmpdir, 'a.caf')
                 run([
                     'afconvert', src,
@@ -684,7 +695,9 @@ class AudioTrack(object):
                     '--soundcheck-generate',
                     '--src-complexity', 'bats',
                     '-r', '127', caff
-                ], check=True, stdout=DEVNULL, stderr=DEVNULL)
+                ], check=True)
+                if not wait_file(caff):
+                    raise FileNotFoundError(u'{} (caff) not found.'.format(caff))
                 run([
                     'afconvert', caff,
                     '-d', 'aac',
@@ -694,7 +707,9 @@ class AudioTrack(object):
                     '-b', '{:d}'.format(int(bitrate)),
                     '-q', '127',
                     '-s', '2', filepath
-                ], check=True, stdout=DEVNULL, stderr=DEVNULL)
+                ], check=True)
+                if not wait_file(filepath):
+                    raise FileNotFoundError(u'{} (m4a) not found.'.format(filepath))
             copy_tags(self.source, filepath)
             add_cover_art(filepath, path.join(
                 path.split(filepath)[0],
@@ -1066,6 +1081,7 @@ def main():
     elif action.lower() in ['update']:
         l = load_library(args[0])
         l.Update()
+        save_library(l, args[0])
     else:
         assert False, 'unhandled action'
 
