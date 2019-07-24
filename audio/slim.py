@@ -468,11 +468,16 @@ def add_cover_art(audio_file, picture_file):
 def get_source_file_checksum(audio_file):
     prog = None
     csum = None
-    for cmtline in '\n'.join(load_tags(audio_file)['comment']).splitlines():
-        if 'Source Checksum Program: ' in cmtline:
-            prog = cmtline.split(':')[1].strip()
-        elif 'Source File Checksum: ' in cmtline:
-            csum = cmtline.split(':')[1].strip()
+    tags = load_tags(audio_file)
+    if 'comment' in tags:
+        cmts = tags['comment']
+        if isinstance(cmts, list):
+            cmts = '\n'.join(cmts)
+        for cmt in cmts.splitlines():
+            if cmt.lower().startswith('source checksum program:'):
+                prog = cmt.split(':')[1].strip()
+            elif cmt.lower().startswith('source file checksum:'):
+                csum = cmt.split(':')[1].strip()
     return {'program': prog, 'checksum': csum}
 
 def set_source_file_checksum(audio_file, csum, program=DEFAULT_CHECKSUM_PROG):
