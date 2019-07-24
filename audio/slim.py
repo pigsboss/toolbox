@@ -703,7 +703,7 @@ class AudioTrack(object):
                     audio.save()
                     add_cover_art(filepath, path.join(path.split(filepath)[0], 'cover.png'))
         elif preset.lower() in ['itunes']:
-            with TemporaryDirectory(dir=path.split(filepath)[0]) as tmpdir:
+            with TemporaryDirectory(prefix=self.id, dir=path.split(filepath)[0]) as tmpdir:
                 if self.format == 'DSD':
                     src = path.join(tmpdir, 'a.aiff')
                     run([
