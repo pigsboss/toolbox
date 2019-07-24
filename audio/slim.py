@@ -21,6 +21,9 @@ Actions:
   update
     Re-scan filesystem and update SONY Music Library.
 
+  sort[_cover_arts]
+    Sort album cover arts by user specified key.
+
 Options:
   -v  verbose.
   -s  source (SONY Music Library) path.
@@ -37,6 +40,8 @@ Options:
         itunes (256kbps 44.1kHz VBR AAC). 
         radio  (128kbps 44.1kHz VBR MP3).
   -b  bitrate, in kbps (overrides preset default bitrate).
+  -k  key for sorting. Default: width.
+  -r  sort in reverse order.
 
 Copyright: pigsboss@github
 """
@@ -49,6 +54,7 @@ import pickle
 import warnings
 import csv
 import shutil
+import unicodedata
 from mutagen.mp3 import MP3
 from mutagen.dsf import DSF
 from mutagen.flac import FLAC, Picture
@@ -186,6 +192,15 @@ PRESETS = {
         'art_format'          : 'jpeg',
         'art_resolution'      :    640
     },
+    'aac': {
+        'max_sample_rate'     :  48000,
+# variable bitrate (-vbr) mode: 1, 2, 3, 4, and 5. (Reference: http://wiki.hydrogenaud.io/index.php?title=Fraunhofer_FDK_AAC#Bitrate_Modes)
+        'bitrate'             :      5,
+        'format'              :  'M4A',
+        'extension'           :  'm4a',
+        'art_format'          : 'jpeg',
+        'art_resolution'      :    640
+    },
     'radio':  {
         'max_sample_rate'     :  48000,
         'bitrate'             : 128000,
@@ -198,6 +213,15 @@ PRESETS = {
 
 DEFAULT_CHECKSUM_PROG = 'sha224sum'
 SAFE_PATH_CHARS = ' _'
+
+def nwidechars(s):
+    return sum(unicodedata.east_asian_width(x)=='W' for x in s)
+
+def width(s):
+    return len(s)+nwidechars(s)
+
+def uljust(s, w):
+    return s.ljust(w-nwidechars(s))
 
 def wait_file(filepath, timeout=5.0):
     t   = 0.0
@@ -442,6 +466,8 @@ def add_cover_art(audio_file, picture_file):
     metadata.save()
 
 def get_source_file_checksum(audio_file):
+    prog = None
+    csum = None
     for cmtline in '\n'.join(load_tags(audio_file)['comment']).splitlines():
         if 'Source Checksum Program: ' in cmtline:
             prog = cmtline.split(':')[1].strip()
@@ -612,11 +638,11 @@ class AudioTrack(object):
         if path.isfile(filepath):
             if exists.lower()[0] == 's':
                 ## skip
-                return
+                return filepath
             elif exists.lower()[0] == 'u':
                 ## update
                 if self.file_checksum == get_source_file_checksum(filepath):
-                    return
+                    return filepath
         if preset.lower() in ['dxd', 'ldac', 'cd']:
             if self.format == 'DSD':
                 ## dsf ------> aiff ----> flac
@@ -672,8 +698,6 @@ class AudioTrack(object):
                     audio.save()
                     add_cover_art(filepath, path.join(path.split(filepath)[0], 'cover.png'))
         elif preset.lower() in ['itunes']:
-            if bitrate is None:
-                bitrate = PRESETS[preset]['bitrate']
             with TemporaryDirectory(dir=path.split(filepath)[0]) as tmpdir:
                 if self.format == 'DSD':
                     src = path.join(tmpdir, 'a.aiff')
@@ -704,7 +728,7 @@ class AudioTrack(object):
                     '-f', 'm4af',
                     '-u', 'pgcm', '2',
                     '--soundcheck-read',
-                    '-b', '{:d}'.format(int(bitrate)),
+                    '-b', '{:d}'.format(PRESETS[preset]['bitrate']),
                     '-q', '127',
                     '-s', '2', filepath
                 ], check=True)
@@ -715,9 +739,28 @@ class AudioTrack(object):
                 path.split(filepath)[0],
                 'cover.{}'.format(PRESETS[preset]['art_format'])
             ))
+        elif preset.lower() in ['aac']:
+            if bitrate is None:
+                bitrate = str(PRESETS[preset]['bitrate'])
+            qu = self.metadata['info']['sample_rate']//44100
+            br = self.metadata['info']['sample_rate']//qu
+            sr = br * min((PRESETS[preset]['max_sample_rate']//44100), qu)
+            if self.format == 'DSD':
+                gain = ',volume=+6dB'
+            else:
+                gain = ''
+            run([
+                'ffmpeg', '-y', '-i', self.source,
+                '-af', 'aresample=resampler=soxr:precision=24:dither_method=triangular:osr={:d}{}'.format(sr, gain),
+                '-vn', '-c:a', 'libfdk_aac', '-vbr', bitrate, filepath
+            ], check=True, stdout=DEVNULL, stderr=DEVNULL)
+            add_cover_art(filepath, path.join(
+                path.split(filepath)[0],
+                'cover.{}'.format(PRESETS[preset]['art_format'])
+            ))
         elif preset.lower() in ['radio']:
             if bitrate is None:
-                bitrate = PRESETS[preset]['bitrate']
+                bitrate = str(PRESETS[preset]['bitrate'])
             q = self.metadata['info']['sample_rate']//44100
             b = self.metadata['info']['sample_rate']//q
             if self.format == 'DSD':
@@ -727,7 +770,7 @@ class AudioTrack(object):
             run([
                 'ffmpeg', '-y', '-i', self.source,
                 '-af', 'aresample=resampler=soxr:precision=24:dither_method=triangular:osr={:d}{}'.format(b, gain),
-                '-vn', '-c:a', 'libmp3lame', '-b:a', '{:d}k'.format(int(bitrate/1000.0)), filepath
+                '-vn', '-c:a', 'libmp3lame', '-b:a', '{}k'.format(bitrate), filepath
             ], check=True, stdout=DEVNULL, stderr=DEVNULL)
             add_cover_art(filepath, path.join(
                 path.split(filepath)[0],
@@ -735,6 +778,8 @@ class AudioTrack(object):
             ))
         else:
             raise TypeError(u'unsupported preset {}.'.format(preset))
+        if not wait_file(filepath):
+            raise FileNotFoundError(u'{} not found.'.format(filepath))
         set_source_file_checksum(
             filepath,
             self.file_checksum['checksum'],
@@ -772,7 +817,29 @@ class Album(list):
         return path.join(genpath(self.artist), genpath(self.title))
 
     def ExtractCoverArt(self, prefix):
-        return self[0].ExtractCoverArt(path.join(prefix, '{}.png'.format(self.id)))
+        self.cover_art_path = path.join(prefix, '{}.png'.format(self.id))
+        if not wait_file(self[0].ExtractCoverArt(self.cover_art_path)):
+            raise FileNotFoundError(u'cover art picture file not found.')
+        return self.GetCoverArtInfo()
+
+    def GetCoverArtInfo(self):
+        result = run([
+            'identify', self.cover_art_path
+        ], check=True, stdout=PIPE).stdout.decode()
+        info = dict(zip([
+            'format',
+            'geometry',
+            'page_geometry',
+            'depth',
+            'colorspace',
+            'filesize',
+            'user_time',
+            'elapsed_time'
+        ], result.split('.png')[1].split()))
+        info['width']  = int(info['geometry'].split('x')[0])
+        info['height'] = int(info['geometry'].split('x')[1])
+        self.cover_art_info = info
+        return info
 
 def __import_worker__(q_in, q_out):
     pack_in = q_in.get()
@@ -791,7 +858,8 @@ def __extract_worker__(q_in, q_out):
     pack_in = q_in.get()
     while pack_in is not None:
         aobj, prefix = pack_in
-        q_out.put(aobj.ExtractCoverArt(prefix))
+        aobj.ExtractCoverArt(prefix)
+        q_out.put(aobj)
         pack_in = q_in.get()
 
 class Library(object):
@@ -885,7 +953,8 @@ class Library(object):
         sys.stdout.flush()
         i = 0
         while i < nalbs:
-            p = q_pic.get()
+            a = q_pic.get()
+            self.albums[a.id] = a
             i += 1
             sys.stdout.write(u'\rExtracting album cover arts......{:d}/{:d} ({:5.1f}%)'.format(i, nalbs, 100.0*i/nalbs))
             sys.stdout.flush()
@@ -896,6 +965,23 @@ class Library(object):
             q_alb.put(None)
         for proc in workers:
             proc.join()
+
+    def SortCoverArts(self, sortkey, reverse=False):
+        """Sort album cover arts.
+"""
+        if reverse:
+            print("Album cover arts sorted by {} (reversed):".format(sortkey))
+        else:
+            print("Album cover arts sorted by {}:".format(sortkey))
+        alb_sorted = sorted(self.albums.keys(), key=lambda alb:self.albums[alb].cover_art_info[sortkey], reverse=reverse)
+        artist_width = max([width(self.albums[alb].artist) for alb in alb_sorted])
+        albnam_width = max([width(self.albums[alb].title)  for alb in alb_sorted])
+        for alb in alb_sorted:
+            print(u'{} {} {}'.format(
+                uljust(self.albums[alb].artist, artist_width+4),
+                uljust(self.albums[alb].title, albnam_width+4),
+                self.albums[alb].cover_art_info[sortkey]
+            ))
 
     def Update(self):
         """Update pre-built SONY Music Library.
@@ -1035,12 +1121,14 @@ def load_library(from_path):
 
 def main():
     action = sys.argv[1]
-    opts, args = gnu_getopt(sys.argv[2:], 'vm:s:p:o:e:b:')
+    opts, args = gnu_getopt(sys.argv[2:], 'vrk:m:s:p:o:e:b:')
     verbose = False
     matched = None
     exists  = 'skip'
     output  = ''
     bitrate = None
+    reverse = False
+    sortkey = 'width'
     for opt, val in opts:
         if opt == '-s':
             srcdir = path.normpath(path.abspath(val))
@@ -1055,7 +1143,11 @@ def main():
         elif opt == '-e':
             exists = val
         elif opt == '-b':
-            bitrate = 1000*float(val)
+            bitrate = val
+        elif opt == '-k':
+            sortkey = val
+        elif opt == '-r':
+            reverse = True
         else:
             assert False, 'unhandled option'
     if action.lower() in ['build']:
@@ -1082,6 +1174,9 @@ def main():
         l = load_library(args[0])
         l.Update()
         save_library(l, args[0])
+    elif action.lower().startswith('sort'):
+        l = load_library(args[0])
+        l.SortCoverArts(sortkey, reverse=reverse)
     else:
         assert False, 'unhandled action'
 
