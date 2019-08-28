@@ -58,14 +58,8 @@ COMMON_EXTS=['.fits','.db','.h5','.root','.zip','.gz','.tar','.bz2','.xz']
 
 
 def mkdir_p(p):
-    try:
+    if not os.path.isdir(p):
         os.makedirs(p)
-        print 'create directory {}'.format(p)
-    except OSError as exc:  # Python >2.5
-        if exc.errno == errno.EEXIST and os.path.isdir(p):
-            pass
-        else:
-            raise
 
 try:
     rsync_opts = sys.argv[1]
@@ -74,13 +68,13 @@ try:
         fetch_list = [line[:-1] for line in f]
     rsync_dest = sys.argv[4]
 except:
-    print __doc__
+    print(__doc__)
     sys.exit()
 
 if not path.isdir(rsync_dest):
-    print '{} does not exist.'.format(rsync_dest)
-    os.mkdir(rsync_dest)
-    print '{} is created.'.format(rsync_dest)
+    print('{} does not exist.'.format(rsync_dest))
+    os.makedirs(rsync_dest)
+    print('{} is created.'.format(rsync_dest))
 
 jobs_pool = []
 for i in range(len(fetch_list)):
@@ -178,8 +172,8 @@ def rsync(worker_id, interval=10.0):
                 try:
                     job['status'] = 'syncing'
                     worker['output'].append('Job %d is syncing.'%job['id'])
-                    output = subprocess.check_output(job['command'], stderr=subprocess.STDOUT)
-                    worker['output'] += output.split('\n')
+                    output = subprocess.run(job['command'], check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout.decode()
+                    worker['output'] += output.splitlines()
                     job['status'] = 'completed'
                     job['return'] = 0
                     worker['output'].append('Job %d is completed.'%job['id'])
@@ -218,7 +212,7 @@ def rsync(worker_id, interval=10.0):
             elif job['status'] == 'completed':
                 worker['output'].append('Job %d is completed.'%job['id'])
             else:
-                raise StandardError('Status %s is undefined.'%job['status'])
+                raise ValueError('Status %s is undefined.'%job['status'])
         time.sleep(interval/1000.0)
         i += 1
     with open('pfetch.worker_%d.log'%worker_id, 'w') as f:
