@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+#coding=utf-8
 """Verify local repository.
 
 Syntax:
@@ -6,7 +7,7 @@ verify-local-repo.py server-checksum [checksum-algorithm] [output]
 """
 
 import sys
-from subprocess import check_output
+from subprocess import run, PIPE, DEVNULL, Popen
 from os import path
 
 server_checksum_file = sys.argv[1]
@@ -25,24 +26,26 @@ with open(output_file, 'w') as g:
             checksum, fits = line.split()
             if path.exists(fits):
                 if checksum_algorithm is not None:
-                    checksum_local = check_output(["{} {}".format(checksum_algorithm, fits)], shell=True).split()[0].lower()
+                    checksum_local = run([checksum_algorithm, '-b', fits], check=True, stdout=PIPE).stdout.decode().split()[0].lower()
                     if checksum_local == checksum.lower():
-                        print "{:<120}: OK".format(fits)
+                        print("{:<120}: OK".format(fits))
                     else:
-                        print "{:<120}: Conflict".format(fits)
+                        print("{:<120}: Conflict".format(fits))
                         g.write('{}  {}\n'.format(checksum, fits))
                 else:
-                    print "{:<120}: OK".format(fits)
+                    print("{:<120}: OK".format(fits))
             elif path.exists(fits+'.gz'):
                 if checksum_algorithm is not None:
-                    checksum_local = check_output(["gzip -d -c {}.gz|{} -".format(fits, checksum_algorithm)], shell=True).split()[0].lower()
+                    gzip_proc = Popen(['gzip', '-d', '-c', '{}.gz'.format(fits)], stdout=PIPE)
+                    checksum_proc = Popen([checksum_algorithm, '-b'], stdin=gzip_proc.stdout, stdout=PIPE)
+                    checksum_local = checksum_proc.communicate()[0].decode().split()[0].lower()
                     if checksum_local == checksum.lower():
-                        print "{:<120}: OK".format(fits+'.gz')
+                        print("{:<120}: OK".format(fits+'.gz'))
                     else:
-                        print "{:<120}: Conflict".format(fits+'.gz')
+                        print("{:<120}: Conflict".format(fits+'.gz'))
                         g.write('{}  {}\n'.format(checksum, fits))
                 else:
-                    print "{:<120}: OK".format(fits+'.gz')
+                    print("{:<120}: OK".format(fits+'.gz'))
             else:
-                print "{:<120}: Miss".format(fits)
+                print("{:<120}: Miss".format(fits))
                 g.write('{}  {}\n'.format(checksum, fits))

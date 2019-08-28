@@ -12,6 +12,7 @@ N_THREADS  is the number of parallel rsync threads.
 
 Author: pigsboss@github
 2017-07-24
+coding=utf-8
 """
 ## rsync error codes:
 ##
@@ -247,4 +248,4 @@ dispatcher.join()
 for i in range(nthreads):
     workers_pool[i]['status'] = 'dismissed'
     workers[i].join()
-print '\nTerminated.'
+print('\nTerminated.')
