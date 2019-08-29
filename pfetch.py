@@ -180,7 +180,7 @@ def rsync(worker_id, interval=10.0):
                     with open('fetch_completed.job_%d.log'%job['id'], 'w') as f:
                         f.write(output)
                 except subprocess.CalledProcessError as e:
-                    worker['output'] += e.output.split('\n')
+                    worker['output'] += e.splitlines()
                     job['return'] = e.returncode
                     if job['return'] < 20:
                         worker['output'].append('Job %d encounters fatal error (code: %d).'%(job['id'], job['return']))
