@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 """Fetch remote directories through rsync with parallelism and auto-retry.
 
 Syntax:
@@ -179,7 +179,7 @@ def rsync(worker_id, interval=10.0):
                     worker['output'].append('Job %d is completed.'%job['id'])
                     with open('fetch_completed.job_%d.log'%job['id'], 'w') as f:
                         f.write(output)
-                except subprocess.CalledProcessError, e:
+                except subprocess.CalledProcessError as e:
                     worker['output'] += e.output.split('\n')
                     job['return'] = e.returncode
                     if job['return'] < 20:
