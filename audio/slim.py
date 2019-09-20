@@ -55,6 +55,7 @@ import warnings
 import csv
 import shutil
 import unicodedata
+import numpy as np
 from mutagen.mp3 import MP3
 from mutagen.dsf import DSF
 from mutagen.flac import FLAC, Picture
@@ -66,7 +67,9 @@ from os import path
 from getopt import gnu_getopt
 from subprocess import run, Popen, PIPE, DEVNULL
 from tempfile import TemporaryDirectory
+from mpi4py import MPI
 
+comm = MPI.COMM_WORLD
 
 ## Reference:
 ##   https://wiki.hydrogenaud.io/index.php?title=Tag_Mapping
@@ -213,6 +216,9 @@ PRESETS = {
 
 DEFAULT_CHECKSUM_PROG = 'sha224sum'
 SAFE_PATH_CHARS = ' _'
+
+def hostname():
+    return run(['hostname','-f'], check=True, stdout=PIPE).stdout.decode().splitlines()[0]
 
 def nwidechars(s):
     return sum(unicodedata.east_asian_width(x)=='W' for x in s)
@@ -1012,77 +1018,151 @@ class Library(object):
     def Export(self, match=None, prefix=None, preset='dxd', exists='skip', verbose=False, bitrate=None):
         """Export matched tracks.
 """
+        mpi_rank = comm.Get_rank()
+        mpi_size = comm.Get_size()
         if match is None:
             artist_match = ''
             album_match = ''
             track_match = ''
         else:
             artist_match, album_match, track_match = match.split('/')
-        ## prepare albums
-        nalbs = len(self.albums)
-        i = 0
-        tic = time()
-        sys.stdout.write(u'Preparing album directories......')
-        sys.stdout.flush()
-        for a in self.albums.values():
-            i+=1
-            if artist_match in a.artist and album_match in a.title:
-                if not path.exists(path.join(prefix, a.GenPath())):
-                    os.makedirs(path.join(prefix, a.GenPath()))
-                if PRESETS[preset]['art_resolution'] is None:
-                    args = [
-                        'convert',
-                        path.join(self.arts_path, '{}.png'.format(a.id)),
-                        path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
-                    ]
-                else:
-                    args = [
-                        'convert',
-                        path.join(self.arts_path, '{}.png'.format(a.id)),
-                        '-resize', '{:d}x{:d}>'.format(PRESETS[preset]['art_resolution'], PRESETS[preset]['art_resolution']),
-                        path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
-                    ]
-                run(args, check=True, stdout=DEVNULL, stderr=DEVNULL)
-            sys.stdout.write(u'\rPreparing album directories......{:d}/{:d} ({:5.1f}%)'.format(i, nalbs, 100.0*i/nalbs))
+        if mpi_size == 1:
+            ## non-mpi parallelism, but multiprocessing
+            ## prepare albums
+            nalbs = len(self.albums)
+            i = 0
+            tic = time()
+            sys.stdout.write(u'Preparing album directories......')
             sys.stdout.flush()
-        sys.stdout.write(u'\rPreparing album directories......Finished. ({:.2f} seconds)\n'.format(time()-tic))
-        sys.stdout.flush()
-        ## export
-        to_path  = []
-        tracks   = []
-        for t in self.tracks.values():
-            if artist_match in t.metadata['albumartist'] and album_match in t.metadata['album'] and track_match in t.GenFilename():
-                tracks.append(t)
-                to_path.append(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']))
-        q_obj    = Queue()
-        q_out    = Queue()
-        ntrks    = len(tracks)
-        nworkers = max(2, cpu_count())
-        workers  = []
-        for i in range(nworkers):
-            proc = Process(target=__export_worker__, args=(q_obj, q_out))
-            proc.start()
-            workers.append(proc)
-        for i in range(ntrks):
-            q_obj.put((tracks[i], to_path[i], preset, exists, bitrate))
-        tic = time()
-        i = 0
-        sys.stdout.write(u'Exporting audio tracks......')
-        sys.stdout.flush()
-        while i < ntrks:
-            outfile = q_out.get()
-            i += 1
-            sys.stdout.write(
-                u'\rExporting audio tracks......{:d}/{:d} ({:5.1f}%)'.format(
-                    i, ntrks, 100.0*i/ntrks))
+            for a in self.albums.values():
+                i+=1
+                if artist_match in a.artist and album_match in a.title:
+                    if not path.exists(path.join(prefix, a.GenPath())):
+                        os.makedirs(path.join(prefix, a.GenPath()))
+                    if PRESETS[preset]['art_resolution'] is None:
+                        args = [
+                            'convert',
+                            path.join(self.arts_path, '{}.png'.format(a.id)),
+                            path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
+                        ]
+                    else:
+                        args = [
+                            'convert',
+                            path.join(self.arts_path, '{}.png'.format(a.id)),
+                            '-resize', '{:d}x{:d}>'.format(PRESETS[preset]['art_resolution'], PRESETS[preset]['art_resolution']),
+                            path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
+                        ]
+                    run(args, check=True, stdout=DEVNULL, stderr=DEVNULL)
+                sys.stdout.write(u'\rPreparing album directories......{:d}/{:d} ({:5.1f}%)'.format(i, nalbs, 100.0*i/nalbs))
+                sys.stdout.flush()
+            sys.stdout.write(u'\rPreparing album directories......Finished. ({:.2f} seconds)\n'.format(time()-tic))
             sys.stdout.flush()
-        for i in range(nworkers):
-            q_obj.put(None)
-        for proc in workers:
-            proc.join()
-        sys.stdout.write(u'\r\rExporting audio tracks......Finished. ({:.2f} seconds)\n'.format(time() - tic))
-        sys.stdout.flush()
-        run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
+            ## export
+            to_path  = []
+            tracks   = []
+            for t in self.tracks.values():
+                if artist_match in t.metadata['albumartist'] and album_match in t.metadata['album'] and track_match in t.GenFilename():
+                    tracks.append(t)
+                    to_path.append(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']))
+            q_obj    = Queue()
+            q_out    = Queue()
+            ntrks    = len(tracks)
+            nworkers = max(2, cpu_count())
+            workers  = []
+            for i in range(nworkers):
+                proc = Process(target=__export_worker__, args=(q_obj, q_out))
+                proc.start()
+                workers.append(proc)
+            for i in range(ntrks):
+                q_obj.put((tracks[i], to_path[i], preset, exists, bitrate))
+            tic = time()
+            i = 0
+            sys.stdout.write(u'Exporting audio tracks......')
+            sys.stdout.flush()
+            while i < ntrks:
+                outfile = q_out.get()
+                i += 1
+                sys.stdout.write(
+                    u'\rExporting audio tracks......{:d}/{:d} ({:5.1f}%)'.format(
+                        i, ntrks, 100.0*i/ntrks))
+                sys.stdout.flush()
+            for i in range(nworkers):
+                q_obj.put(None)
+            for proc in workers:
+                proc.join()
+            sys.stdout.write(u'\r\rExporting audio tracks......Finished. ({:.2f} seconds)\n'.format(time() - tic))
+            sys.stdout.flush()
+            run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
+        else:
+            ## mpi parallelism
+            tic = time()
+            if mpi_rank == 0:
+                nalbs = len(self.albums)
+                i = 0
+                tic = time()
+                sys.stdout.write(u'Preparing album directories......')
+                sys.stdout.flush()
+                for a in self.albums.values():
+                    i+=1
+                    if artist_match in a.artist and album_match in a.title:
+                        if not path.exists(path.join(prefix, a.GenPath())):
+                            os.makedirs(path.join(prefix, a.GenPath()))
+                        if PRESETS[preset]['art_resolution'] is None:
+                            args = [
+                                'convert',
+                                path.join(self.arts_path, '{}.png'.format(a.id)),
+                                path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
+                            ]
+                        else:
+                            args = [
+                                'convert',
+                                path.join(self.arts_path, '{}.png'.format(a.id)),
+                                '-resize', '{:d}x{:d}>'.format(PRESETS[preset]['art_resolution'], PRESETS[preset]['art_resolution']),
+                                path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
+                            ]
+                        run(args, check=True, stdout=DEVNULL, stderr=DEVNULL)
+                    sys.stdout.write(u'\rPreparing album directories......{:d}/{:d} ({:5.1f}%)'.format(i, nalbs, 100.0*i/nalbs))
+                    sys.stdout.flush()
+                sys.stdout.write(u'\rPreparing album directories......Finished. ({:.2f} seconds)\n'.format(time()-tic))
+                sys.stdout.flush()
+                sleep(1.0)
+                to_path  = []
+                tracks   = []
+                for t in self.tracks.values():
+                    if artist_match in t.metadata['albumartist'] and album_match in t.metadata['album'] and track_match in t.GenFilename():
+                        tracks.append(t)
+                        to_path.append(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']))
+            else:
+                tracks  = None
+                to_path = None
+            tracks  = comm.bcast( tracks, root=0)
+            to_path = comm.bcast(to_path, root=0)
+            ntrks   = len(tracks)
+            node    = hostname()
+            node    = comm.gather(node, root=0)
+            if mpi_rank == 0:
+                for i in range(mpi_size):
+                    sleep(.1)
+                    print(u'Process {}/{} is ready on [{}].'.format(i+1, mpi_size, node[i]))
+                print(u'All processes are ready.')
+                itrks = list(map(len, [tracks[i::(mpi_size-1)] for i in range(mpi_size-1)]))
+                t = np.zeros(mpi_size-1, dtype='int64')
+                while np.sum(t)<ntrks:
+                    sleep(.5)
+                    for i in range(mpi_size-1):
+                        sleep(.1)
+                        if t[i]<itrks[i]:
+                            msg = comm.recv(source=i+1, tag=11)
+                            t[i] += 1
+                        sys.stdout.write(u'\rExporting audio tracks......{:d}/{:d} ({:5.1f}%)'.format(int(np.sum(t)), ntrks, 100.0*np.sum(t)/ntrks))
+                        sys.stdout.flush()
+                sys.stdout.write(u'\rExporting audio tracks......Finished. ({:.2f} seconds)\n'.format(time() - tic))
+                sys.stdout.flush()
+                run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
+            else:
+                for i in range(mpi_rank-1, ntrks, mpi_size-1):
+                    comm.send(tracks[i].Export(to_path[i], preset, exists, bitrate), dest=0, tag=11)
+                    sleep(.1)
 
     def Print(self, match=None, verbose=False, output=''):
         """Print matched albums and audio tracks.
@@ -1125,6 +1205,8 @@ def load_library(from_path):
         return pickle.load(f)
 
 def main():
+    mpi_rank = comm.Get_rank()
+    mpi_size = comm.Get_size()
     action = sys.argv[1]
     opts, args = gnu_getopt(sys.argv[2:], 'vrk:m:s:p:o:e:b:')
     verbose = False
@@ -1156,17 +1238,25 @@ def main():
         else:
             assert False, 'unhandled option'
     if action.lower() in ['build']:
-        outdir = path.normpath(path.abspath(args[0]))
-        l = Library()
-        l.Build(srcdir, path.abspath(outdir))
-        save_library(l, path.join(outdir, 'main.db'))
+        if mpi_rank == 0:
+            outdir = path.normpath(path.abspath(args[0]))
+            l = Library()
+            l.Build(srcdir, path.abspath(outdir))
+            save_library(l, path.join(outdir, 'main.db'))
     elif action.lower() in ['help']:
-        print(__doc__)
+        if mpi_rank == 0:
+            print(__doc__)
     elif action.lower() in ['print']:
-        l = load_library(args[0])
-        l.Print(match=matched, verbose=verbose, output=output)
+        if mpi_rank == 0:
+            l = load_library(args[0])
+            l.Print(match=matched, verbose=verbose, output=output)
     elif action.lower() in ['export']:
-        l = load_library(args[0])
+        if mpi_rank == 0:
+            l = load_library(path.normpath(path.abspath(path.realpath(args[0]))))
+        else:
+            l = None
+        l = comm.bcast(l, root=0)
+        sleep(0.5)
         l.Export(
             match=matched,
             preset=preset,
@@ -1176,12 +1266,14 @@ def main():
             bitrate=bitrate
         )
     elif action.lower() in ['update']:
-        l = load_library(args[0])
-        l.Update()
-        save_library(l, args[0])
+        if mpi_rank == 0:
+            l = load_library(args[0])
+            l.Update()
+            save_library(l, args[0])
     elif action.lower().startswith('sort'):
-        l = load_library(args[0])
-        l.SortCoverArts(sortkey, reverse=reverse)
+        if mpi_rank == 0:
+            l = load_library(args[0])
+            l.SortCoverArts(sortkey, reverse=reverse)
     else:
         assert False, 'unhandled action'
 
