@@ -38,10 +38,13 @@ Options:
         ldac   (up to   96kHz/24bit FLAC).
         cd     (up to   48kHz/24bit FLAC).
         itunes (256kbps 44.1kHz VBR AAC). 
+        aac    (44.1kHz/48kHz VBR 5 AAC).
+        opus   (44.1kHz/48kHz 128bps Opus).
         radio  (128kbps 44.1kHz VBR MP3).
   -b  bitrate, in kbps (overrides preset default bitrate).
   -k  key for sorting. Default: width.
   -r  sort in reverse order.
+  -o  output.
 
 Copyright: pigsboss@github
 """
@@ -61,6 +64,7 @@ from mutagen.dsf import DSF
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 from mutagen.id3 import ID3, APIC, ID3TimeStamp, TextFrame, COMM
+from mutagen.oggopus import OggOpus
 from multiprocessing import cpu_count, Pool, Process, Queue
 from time import time, sleep
 from os import path
@@ -204,9 +208,17 @@ PRESETS = {
         'art_format'          : 'jpeg',
         'art_resolution'      :    640
     },
+    'opus': {
+        'max_sample_rate'     :  48000,
+        'bitrate'             :    128, ## kbps
+        'format'              :  'OGG',
+        'extension'           :  'opus',
+        'art_format'          : 'jpeg',
+        'art_resolution'      :    640
+    },
     'radio':  {
         'max_sample_rate'     :  48000,
-        'bitrate'             : 128000,
+        'bitrate'             :    128, ## kbps
         'format'              :  'MP3',
         'extension'           :  'mp3',
         'art_format'          : 'jpeg',
@@ -257,6 +269,9 @@ http://age.hobba.nl/audio/mirroredpages/ogg-tagging.html
     elif audio_file.lower().endswith('.mp3'):
         audio = MP3(audio_file)
         scheme ='ID3'
+    elif audio_file.lower().endswith('.opus'):
+        audio = OggOpus(audio_file)
+        scheme = 'Vorbis'
     else:
         raise TypeError(u'unsupported audio file format {}.'.format(audio_file))
     meta = {}
@@ -373,6 +388,9 @@ def save_tags(meta, audio_file):
     elif audio_file.lower().endswith('.mp3'):
         audio = MP3(audio_file)
         scheme ='ID3'
+    elif audio_file.lower().endswith('.opus'):
+        audio = OggOpus(audio_file)
+        scheme = 'Vorbis'
     else:
         raise TypeError(u'unsupported audio file format {}.'.format(audio_file))
     if scheme == 'ID3':
@@ -490,6 +508,9 @@ def set_source_file_checksum(audio_file, csum, program=DEFAULT_CHECKSUM_PROG):
     if  audio_file.lower().endswith('.flac'):
         metadata = FLAC(audio_file)
         scheme = 'Vorbis'
+    elif audio_file.lower().endswith('.opus'):
+        metadata = OggOpus(audio_file)
+        scheme = 'Vorbis'
     elif audio_file.lower().endswith('.dsf'):
         metadata = DSF(audio_file)
         scheme = 'ID3'
@@ -546,6 +567,19 @@ def find_tracks(srcdir):
         if path.isfile(p):
             tracks.append(path.normpath(path.abspath(p)))
     return tracks
+
+def gen_opus_tagopts(tags):
+    """Generate opusenc metadata options.
+"""
+    opts = []
+    for k in tags:
+        if k in ['title', 'artist', 'album', 'tracknumber', 'date', 'genre']:
+            opts += ['--{}'.format(k), '{}'.format(tags[k])]
+        elif k == 'comment':
+            opts += ['--comment', '{}={}'.format('comment', tags[k])]
+        elif k in TAG_MAP['Vorbis']:
+            opts += ['--comment', '{}={}'.format(k.upper(), tags[k])]
+    return opts
 
 def gen_flac_tagopts(tags):
     """Generate FLAC Tagging options.
@@ -654,14 +688,15 @@ class AudioTrack(object):
                 ## update
                 if self.file_checksum == get_source_file_checksum(filepath):
                     return filepath
+        coverart_path = path.join(path.split(filepath)[0], 'cover.{}'.format(PRESETS[preset]['art_format']))
         if preset.lower() in ['dxd', 'ldac', 'cd']:
             if self.format == 'DSD':
-                ## dsf ------> aiff ----> flac
-                ##     ffmpeg       flac
-                if self.metadata['info']['sample_rate'] > PRESETS[preset]['max_sample_rate']//48000*44100*16:
-                    sample_rate=PRESETS[preset]['max_sample_rate']//48000*44100
+                ## dsf ------> aiff ------------> flac/opus
+                ##     ffmpeg       flac/opusenc
+                if self.metadata['info']['sample_rate'] > int(PRESETS[preset]['max_sample_rate']/48000+0.5)*44100*16:
+                    sample_rate=int(PRESETS[preset]['max_sample_rate']/48000+0.5)*44100
                 else:
-                    sample_rate=self.metadata['info']['sample_rate']//44100//16*44100
+                    sample_rate=int(self.metadata['info']['sample_rate']/44100/16+0.5)*44100
                 ffmpeg = Popen([
                     'ffmpeg', '-y', '-i', self.source,
                     '-af', 'aresample=resampler=soxr:precision=28:dither_method=triangular:osr={:d},volume=+6dB'.format(sample_rate),
@@ -671,14 +706,14 @@ class AudioTrack(object):
                 ], stdout=PIPE, stderr=DEVNULL)
                 flac_enc = Popen([
                     'flac', '-', '-f',
-                    '--picture', '3|image/png|Cover||{}'.format(path.join(path.split(filepath)[0], 'cover.png')),
+                    '--picture', '3|image/png|Cover||{}'.format(coverart_path),
                     '--ignore-chunk-sizes', '--force-aiff-format',
                     *gen_flac_tagopts(self.metadata),
                     '-o', filepath
                 ], stdin=ffmpeg.stdout, stderr=DEVNULL)
                 flac_enc.communicate()
             else:
-                q = self.metadata['info']['sample_rate'] // 44100
+                q = int(self.metadata['info']['sample_rate']/44100+0.5)
                 b = self.metadata['info']['sample_rate'] // q
                 if q > PRESETS[preset]['max_sample_rate']//48000:
                     sample_rate = PRESETS[preset]['max_sample_rate']//48000*b
@@ -769,6 +804,32 @@ class AudioTrack(object):
                 path.split(filepath)[0],
                 'cover.{}'.format(PRESETS[preset]['art_format'])
             ))
+        elif preset.lower() in ['opus']:
+            b = 48000 ## according to official opus codec RFC 6716 MDCT (modified discrete cosine transform)
+                      ## layer of opus encoder always operates on 48kHz sampling rate.
+            if bitrate is None:
+                bitrate = str(PRESETS[preset]['bitrate'])
+            if self.format == 'DSD':
+                gain = ',volume=+6dB'
+            else:
+                gain = ''
+            ffmpeg = Popen([
+                'ffmpeg', '-y', '-i', self.source,
+                '-af', 'aresample=resampler=soxr:precision=28:dither_method=triangular:osr={:d}{}'.format(b, gain),
+                '-vn', '-map_metadata', '-1',
+                '-c:a', 'pcm_s24le',
+                '-f', 'wav', '-'
+            ], stdout=PIPE, stderr=DEVNULL)
+            opus_enc = Popen([
+                'opusenc', '-',
+                '--picture', '3||Cover||{}'.format(coverart_path),
+                '--raw', '--raw-bits', '24', '--raw-rate', '{:d}'.format(b), '--raw-chan', '2',
+                '--music', '--framesize', '60', '--comp', '10', '--vbr',
+                '--bitrate', '{}k'.format(bitrate),
+                *gen_opus_tagopts(self.metadata),
+                filepath
+            ], stdin=ffmpeg.stdout, stderr=DEVNULL)
+            opus_enc.communicate()
         elif preset.lower() in ['radio']:
             if bitrate is None:
                 bitrate = str(PRESETS[preset]['bitrate'])
