@@ -38,10 +38,13 @@ Options:
         ldac   (up to   96kHz/24bit FLAC).
         cd     (up to   48kHz/24bit FLAC).
         itunes (256kbps 44.1kHz VBR AAC). 
+        aac    (44.1kHz/48kHz VBR 5 AAC).
+        opus   (44.1kHz/48kHz 128bps Opus).
         radio  (128kbps 44.1kHz VBR MP3).
   -b  bitrate, in kbps (overrides preset default bitrate).
   -k  key for sorting. Default: width.
   -r  sort in reverse order.
+  -o  output.
 
 Copyright: pigsboss@github
 """
@@ -55,18 +58,22 @@ import warnings
 import csv
 import shutil
 import unicodedata
+import numpy as np
 from mutagen.mp3 import MP3
 from mutagen.dsf import DSF
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 from mutagen.id3 import ID3, APIC, ID3TimeStamp, TextFrame, COMM
+from mutagen.oggopus import OggOpus
 from multiprocessing import cpu_count, Pool, Process, Queue
 from time import time, sleep
 from os import path
 from getopt import gnu_getopt
 from subprocess import run, Popen, PIPE, DEVNULL
 from tempfile import TemporaryDirectory
+from mpi4py import MPI
 
+comm = MPI.COMM_WORLD
 
 ## Reference:
 ##   https://wiki.hydrogenaud.io/index.php?title=Tag_Mapping
@@ -201,9 +208,17 @@ PRESETS = {
         'art_format'          : 'jpeg',
         'art_resolution'      :    640
     },
+    'opus': {
+        'max_sample_rate'     :  48000,
+        'bitrate'             :    128, ## kbps
+        'format'              :  'OGG',
+        'extension'           :  'opus',
+        'art_format'          : 'jpeg',
+        'art_resolution'      :    640
+    },
     'radio':  {
         'max_sample_rate'     :  48000,
-        'bitrate'             : 128000,
+        'bitrate'             :    128, ## kbps
         'format'              :  'MP3',
         'extension'           :  'mp3',
         'art_format'          : 'jpeg',
@@ -213,6 +228,9 @@ PRESETS = {
 
 DEFAULT_CHECKSUM_PROG = 'sha224sum'
 SAFE_PATH_CHARS = ' _'
+
+def hostname():
+    return run(['hostname','-f'], check=True, stdout=PIPE).stdout.decode().splitlines()[0]
 
 def nwidechars(s):
     return sum(unicodedata.east_asian_width(x)=='W' for x in s)
@@ -251,6 +269,9 @@ http://age.hobba.nl/audio/mirroredpages/ogg-tagging.html
     elif audio_file.lower().endswith('.mp3'):
         audio = MP3(audio_file)
         scheme ='ID3'
+    elif audio_file.lower().endswith('.opus'):
+        audio = OggOpus(audio_file)
+        scheme = 'Vorbis'
     else:
         raise TypeError(u'unsupported audio file format {}.'.format(audio_file))
     meta = {}
@@ -367,6 +388,9 @@ def save_tags(meta, audio_file):
     elif audio_file.lower().endswith('.mp3'):
         audio = MP3(audio_file)
         scheme ='ID3'
+    elif audio_file.lower().endswith('.opus'):
+        audio = OggOpus(audio_file)
+        scheme = 'Vorbis'
     else:
         raise TypeError(u'unsupported audio file format {}.'.format(audio_file))
     if scheme == 'ID3':
@@ -484,6 +508,9 @@ def set_source_file_checksum(audio_file, csum, program=DEFAULT_CHECKSUM_PROG):
     if  audio_file.lower().endswith('.flac'):
         metadata = FLAC(audio_file)
         scheme = 'Vorbis'
+    elif audio_file.lower().endswith('.opus'):
+        metadata = OggOpus(audio_file)
+        scheme = 'Vorbis'
     elif audio_file.lower().endswith('.dsf'):
         metadata = DSF(audio_file)
         scheme = 'ID3'
@@ -540,6 +567,19 @@ def find_tracks(srcdir):
         if path.isfile(p):
             tracks.append(path.normpath(path.abspath(p)))
     return tracks
+
+def gen_opus_tagopts(tags):
+    """Generate opusenc metadata options.
+"""
+    opts = []
+    for k in tags:
+        if k in ['title', 'artist', 'album', 'tracknumber', 'date', 'genre']:
+            opts += ['--{}'.format(k), '{}'.format(tags[k])]
+        elif k == 'comment':
+            opts += ['--comment', '{}={}'.format('comment', tags[k])]
+        elif k in TAG_MAP['Vorbis']:
+            opts += ['--comment', '{}={}'.format(k.upper(), tags[k])]
+    return opts
 
 def gen_flac_tagopts(tags):
     """Generate FLAC Tagging options.
@@ -648,14 +688,15 @@ class AudioTrack(object):
                 ## update
                 if self.file_checksum == get_source_file_checksum(filepath):
                     return filepath
+        coverart_path = path.join(path.split(filepath)[0], 'cover.{}'.format(PRESETS[preset]['art_format']))
         if preset.lower() in ['dxd', 'ldac', 'cd']:
             if self.format == 'DSD':
-                ## dsf ------> aiff ----> flac
-                ##     ffmpeg       flac
-                if self.metadata['info']['sample_rate'] > PRESETS[preset]['max_sample_rate']//48000*44100*16:
-                    sample_rate=PRESETS[preset]['max_sample_rate']//48000*44100
+                ## dsf ------> aiff ------------> flac/opus
+                ##     ffmpeg       flac/opusenc
+                if self.metadata['info']['sample_rate'] > int(PRESETS[preset]['max_sample_rate']/48000+0.5)*44100*16:
+                    sample_rate=int(PRESETS[preset]['max_sample_rate']/48000+0.5)*44100
                 else:
-                    sample_rate=self.metadata['info']['sample_rate']//44100//16*44100
+                    sample_rate=int(self.metadata['info']['sample_rate']/44100/16+0.5)*44100
                 ffmpeg = Popen([
                     'ffmpeg', '-y', '-i', self.source,
                     '-af', 'aresample=resampler=soxr:precision=28:dither_method=triangular:osr={:d},volume=+6dB'.format(sample_rate),
@@ -665,14 +706,14 @@ class AudioTrack(object):
                 ], stdout=PIPE, stderr=DEVNULL)
                 flac_enc = Popen([
                     'flac', '-', '-f',
-                    '--picture', '3|image/png|Cover||{}'.format(path.join(path.split(filepath)[0], 'cover.png')),
+                    '--picture', '3|image/png|Cover||{}'.format(coverart_path),
                     '--ignore-chunk-sizes', '--force-aiff-format',
                     *gen_flac_tagopts(self.metadata),
                     '-o', filepath
                 ], stdin=ffmpeg.stdout, stderr=DEVNULL)
                 flac_enc.communicate()
             else:
-                q = self.metadata['info']['sample_rate'] // 44100
+                q = int(self.metadata['info']['sample_rate']/44100+0.5)
                 b = self.metadata['info']['sample_rate'] // q
                 if q > PRESETS[preset]['max_sample_rate']//48000:
                     sample_rate = PRESETS[preset]['max_sample_rate']//48000*b
@@ -763,6 +804,32 @@ class AudioTrack(object):
                 path.split(filepath)[0],
                 'cover.{}'.format(PRESETS[preset]['art_format'])
             ))
+        elif preset.lower() in ['opus']:
+            b = 48000 ## according to official opus codec RFC 6716 MDCT (modified discrete cosine transform)
+                      ## layer of opus encoder always operates on 48kHz sampling rate.
+            if bitrate is None:
+                bitrate = str(PRESETS[preset]['bitrate'])
+            if self.format == 'DSD':
+                gain = ',volume=+6dB'
+            else:
+                gain = ''
+            ffmpeg = Popen([
+                'ffmpeg', '-y', '-i', self.source,
+                '-af', 'aresample=resampler=soxr:precision=28:dither_method=triangular:osr={:d}{}'.format(b, gain),
+                '-vn', '-map_metadata', '-1',
+                '-c:a', 'pcm_s24le',
+                '-f', 'wav', '-'
+            ], stdout=PIPE, stderr=DEVNULL)
+            opus_enc = Popen([
+                'opusenc', '-',
+                '--picture', '3||Cover||{}'.format(coverart_path),
+                '--raw', '--raw-bits', '24', '--raw-rate', '{:d}'.format(b), '--raw-chan', '2',
+                '--music', '--framesize', '60', '--comp', '10', '--vbr',
+                '--bitrate', '{}k'.format(bitrate),
+                *gen_opus_tagopts(self.metadata),
+                filepath
+            ], stdin=ffmpeg.stdout, stderr=DEVNULL)
+            opus_enc.communicate()
         elif preset.lower() in ['radio']:
             if bitrate is None:
                 bitrate = str(PRESETS[preset]['bitrate'])
@@ -1012,77 +1079,151 @@ class Library(object):
     def Export(self, match=None, prefix=None, preset='dxd', exists='skip', verbose=False, bitrate=None):
         """Export matched tracks.
 """
+        mpi_rank = comm.Get_rank()
+        mpi_size = comm.Get_size()
         if match is None:
             artist_match = ''
             album_match = ''
             track_match = ''
         else:
             artist_match, album_match, track_match = match.split('/')
-        ## prepare albums
-        nalbs = len(self.albums)
-        i = 0
-        tic = time()
-        sys.stdout.write(u'Preparing album directories......')
-        sys.stdout.flush()
-        for a in self.albums.values():
-            i+=1
-            if artist_match in a.artist and album_match in a.title:
-                if not path.exists(path.join(prefix, a.GenPath())):
-                    os.makedirs(path.join(prefix, a.GenPath()))
-                if PRESETS[preset]['art_resolution'] is None:
-                    args = [
-                        'convert',
-                        path.join(self.arts_path, '{}.png'.format(a.id)),
-                        path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
-                    ]
-                else:
-                    args = [
-                        'convert',
-                        path.join(self.arts_path, '{}.png'.format(a.id)),
-                        '-resize', '{:d}x{:d}>'.format(PRESETS[preset]['art_resolution'], PRESETS[preset]['art_resolution']),
-                        path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
-                    ]
-                run(args, check=True, stdout=DEVNULL, stderr=DEVNULL)
-            sys.stdout.write(u'\rPreparing album directories......{:d}/{:d} ({:5.1f}%)'.format(i, nalbs, 100.0*i/nalbs))
+        if mpi_size == 1:
+            ## non-mpi parallelism, but multiprocessing
+            ## prepare albums
+            nalbs = len(self.albums)
+            i = 0
+            tic = time()
+            sys.stdout.write(u'Preparing album directories......')
             sys.stdout.flush()
-        sys.stdout.write(u'\rPreparing album directories......Finished. ({:.2f} seconds)\n'.format(time()-tic))
-        sys.stdout.flush()
-        ## export
-        to_path  = []
-        tracks   = []
-        for t in self.tracks.values():
-            if artist_match in t.metadata['albumartist'] and album_match in t.metadata['album'] and track_match in t.GenFilename():
-                tracks.append(t)
-                to_path.append(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']))
-        q_obj    = Queue()
-        q_out    = Queue()
-        ntrks    = len(tracks)
-        nworkers = max(2, cpu_count())
-        workers  = []
-        for i in range(nworkers):
-            proc = Process(target=__export_worker__, args=(q_obj, q_out))
-            proc.start()
-            workers.append(proc)
-        for i in range(ntrks):
-            q_obj.put((tracks[i], to_path[i], preset, exists, bitrate))
-        tic = time()
-        i = 0
-        sys.stdout.write(u'Exporting audio tracks......')
-        sys.stdout.flush()
-        while i < ntrks:
-            outfile = q_out.get()
-            i += 1
-            sys.stdout.write(
-                u'\rExporting audio tracks......{:d}/{:d} ({:5.1f}%)'.format(
-                    i, ntrks, 100.0*i/ntrks))
+            for a in self.albums.values():
+                i+=1
+                if artist_match in a.artist and album_match in a.title:
+                    if not path.exists(path.join(prefix, a.GenPath())):
+                        os.makedirs(path.join(prefix, a.GenPath()))
+                    if PRESETS[preset]['art_resolution'] is None:
+                        args = [
+                            'convert',
+                            path.join(self.arts_path, '{}.png'.format(a.id)),
+                            path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
+                        ]
+                    else:
+                        args = [
+                            'convert',
+                            path.join(self.arts_path, '{}.png'.format(a.id)),
+                            '-resize', '{:d}x{:d}>'.format(PRESETS[preset]['art_resolution'], PRESETS[preset]['art_resolution']),
+                            path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
+                        ]
+                    run(args, check=True, stdout=DEVNULL, stderr=DEVNULL)
+                sys.stdout.write(u'\rPreparing album directories......{:d}/{:d} ({:5.1f}%)'.format(i, nalbs, 100.0*i/nalbs))
+                sys.stdout.flush()
+            sys.stdout.write(u'\rPreparing album directories......Finished. ({:.2f} seconds)\n'.format(time()-tic))
             sys.stdout.flush()
-        for i in range(nworkers):
-            q_obj.put(None)
-        for proc in workers:
-            proc.join()
-        sys.stdout.write(u'\r\rExporting audio tracks......Finished. ({:.2f} seconds)\n'.format(time() - tic))
-        sys.stdout.flush()
-        run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
+            ## export
+            to_path  = []
+            tracks   = []
+            for t in self.tracks.values():
+                if artist_match in t.metadata['albumartist'] and album_match in t.metadata['album'] and track_match in t.GenFilename():
+                    tracks.append(t)
+                    to_path.append(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']))
+            q_obj    = Queue()
+            q_out    = Queue()
+            ntrks    = len(tracks)
+            nworkers = max(2, cpu_count())
+            workers  = []
+            for i in range(nworkers):
+                proc = Process(target=__export_worker__, args=(q_obj, q_out))
+                proc.start()
+                workers.append(proc)
+            for i in range(ntrks):
+                q_obj.put((tracks[i], to_path[i], preset, exists, bitrate))
+            tic = time()
+            i = 0
+            sys.stdout.write(u'Exporting audio tracks......')
+            sys.stdout.flush()
+            while i < ntrks:
+                outfile = q_out.get()
+                i += 1
+                sys.stdout.write(
+                    u'\rExporting audio tracks......{:d}/{:d} ({:5.1f}%)'.format(
+                        i, ntrks, 100.0*i/ntrks))
+                sys.stdout.flush()
+            for i in range(nworkers):
+                q_obj.put(None)
+            for proc in workers:
+                proc.join()
+            sys.stdout.write(u'\r\rExporting audio tracks......Finished. ({:.2f} seconds)\n'.format(time() - tic))
+            sys.stdout.flush()
+            run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
+        else:
+            ## mpi parallelism
+            tic = time()
+            if mpi_rank == 0:
+                nalbs = len(self.albums)
+                i = 0
+                tic = time()
+                sys.stdout.write(u'Preparing album directories......')
+                sys.stdout.flush()
+                for a in self.albums.values():
+                    i+=1
+                    if artist_match in a.artist and album_match in a.title:
+                        if not path.exists(path.join(prefix, a.GenPath())):
+                            os.makedirs(path.join(prefix, a.GenPath()))
+                        if PRESETS[preset]['art_resolution'] is None:
+                            args = [
+                                'convert',
+                                path.join(self.arts_path, '{}.png'.format(a.id)),
+                                path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
+                            ]
+                        else:
+                            args = [
+                                'convert',
+                                path.join(self.arts_path, '{}.png'.format(a.id)),
+                                '-resize', '{:d}x{:d}>'.format(PRESETS[preset]['art_resolution'], PRESETS[preset]['art_resolution']),
+                                path.join(prefix, a.GenPath(), 'cover.{}'.format(PRESETS[preset]['art_format']))
+                            ]
+                        run(args, check=True, stdout=DEVNULL, stderr=DEVNULL)
+                    sys.stdout.write(u'\rPreparing album directories......{:d}/{:d} ({:5.1f}%)'.format(i, nalbs, 100.0*i/nalbs))
+                    sys.stdout.flush()
+                sys.stdout.write(u'\rPreparing album directories......Finished. ({:.2f} seconds)\n'.format(time()-tic))
+                sys.stdout.flush()
+                sleep(1.0)
+                to_path  = []
+                tracks   = []
+                for t in self.tracks.values():
+                    if artist_match in t.metadata['albumartist'] and album_match in t.metadata['album'] and track_match in t.GenFilename():
+                        tracks.append(t)
+                        to_path.append(u'{}.{}'.format(path.join(prefix, t.GenPath()), PRESETS[preset]['extension']))
+            else:
+                tracks  = None
+                to_path = None
+            tracks  = comm.bcast( tracks, root=0)
+            to_path = comm.bcast(to_path, root=0)
+            ntrks   = len(tracks)
+            node    = hostname()
+            node    = comm.gather(node, root=0)
+            if mpi_rank == 0:
+                for i in range(mpi_size):
+                    sleep(.1)
+                    print(u'Process {}/{} is ready on [{}].'.format(i+1, mpi_size, node[i]))
+                print(u'All processes are ready.')
+                itrks = list(map(len, [tracks[i::(mpi_size-1)] for i in range(mpi_size-1)]))
+                t = np.zeros(mpi_size-1, dtype='int64')
+                while np.sum(t)<ntrks:
+                    sleep(.5)
+                    for i in range(mpi_size-1):
+                        sleep(.1)
+                        if t[i]<itrks[i]:
+                            msg = comm.recv(source=i+1, tag=11)
+                            t[i] += 1
+                        sys.stdout.write(u'\rExporting audio tracks......{:d}/{:d} ({:5.1f}%)'.format(int(np.sum(t)), ntrks, 100.0*np.sum(t)/ntrks))
+                        sys.stdout.flush()
+                sys.stdout.write(u'\rExporting audio tracks......Finished. ({:.2f} seconds)\n'.format(time() - tic))
+                sys.stdout.flush()
+                run(['stty', 'sane'], stdout=DEVNULL, stderr=DEVNULL)
+            else:
+                for i in range(mpi_rank-1, ntrks, mpi_size-1):
+                    comm.send(tracks[i].Export(to_path[i], preset, exists, bitrate), dest=0, tag=11)
+                    sleep(.1)
 
     def Print(self, match=None, verbose=False, output=''):
         """Print matched albums and audio tracks.
@@ -1125,6 +1266,8 @@ def load_library(from_path):
         return pickle.load(f)
 
 def main():
+    mpi_rank = comm.Get_rank()
+    mpi_size = comm.Get_size()
     action = sys.argv[1]
     opts, args = gnu_getopt(sys.argv[2:], 'vrk:m:s:p:o:e:b:')
     verbose = False
@@ -1156,17 +1299,25 @@ def main():
         else:
             assert False, 'unhandled option'
     if action.lower() in ['build']:
-        outdir = path.normpath(path.abspath(args[0]))
-        l = Library()
-        l.Build(srcdir, path.abspath(outdir))
-        save_library(l, path.join(outdir, 'main.db'))
+        if mpi_rank == 0:
+            outdir = path.normpath(path.abspath(args[0]))
+            l = Library()
+            l.Build(srcdir, path.abspath(outdir))
+            save_library(l, path.join(outdir, 'main.db'))
     elif action.lower() in ['help']:
-        print(__doc__)
+        if mpi_rank == 0:
+            print(__doc__)
     elif action.lower() in ['print']:
-        l = load_library(args[0])
-        l.Print(match=matched, verbose=verbose, output=output)
+        if mpi_rank == 0:
+            l = load_library(args[0])
+            l.Print(match=matched, verbose=verbose, output=output)
     elif action.lower() in ['export']:
-        l = load_library(args[0])
+        if mpi_rank == 0:
+            l = load_library(path.normpath(path.abspath(path.realpath(args[0]))))
+        else:
+            l = None
+        l = comm.bcast(l, root=0)
+        sleep(0.5)
         l.Export(
             match=matched,
             preset=preset,
@@ -1176,12 +1327,14 @@ def main():
             bitrate=bitrate
         )
     elif action.lower() in ['update']:
-        l = load_library(args[0])
-        l.Update()
-        save_library(l, args[0])
+        if mpi_rank == 0:
+            l = load_library(args[0])
+            l.Update()
+            save_library(l, args[0])
     elif action.lower().startswith('sort'):
-        l = load_library(args[0])
-        l.SortCoverArts(sortkey, reverse=reverse)
+        if mpi_rank == 0:
+            l = load_library(args[0])
+            l.SortCoverArts(sortkey, reverse=reverse)
     else:
         assert False, 'unhandled action'
 
