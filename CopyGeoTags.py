@@ -32,7 +32,7 @@ def dd2dms(dd):
 def exiftag2timestamp(exiftag):
     try:
         return (
-            datetime.strptime(exiftag[0x9003],
+            datetime.strptime(exiftag[0x9003].decode(),
                               r'%Y:%m:%d %H:%M:%S')-
             datetime.strptime("1970-01-01T00:00:00",
                               r'%Y-%m-%dT%H:%M:%S')
@@ -94,7 +94,7 @@ if path.isdir(sys.argv[1]):
                 ts.append(t)
                 rs.append(r)
             else:
-                print 'Missing datetime and/or GPS data in {}.'.format(f)
+                print('Missing datetime and/or GPS data in {}.'.format(f))
 elif path.isfile(sys.argv[1]):
     f = sys.argv[1]
     d = piexif.load(f)
@@ -104,7 +104,7 @@ elif path.isfile(sys.argv[1]):
         ts.append(t)
         rs.append(r)
     else:
-        print 'Missing datetime and/or GPS data in {}.'.format(f)
+        print('Missing datetime and/or GPS data in {}.'.format(f))
 if len(ts) == 0:
     raise StandardError('No reference found.')
 elif len(ts) == 1:

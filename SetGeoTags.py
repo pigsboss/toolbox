@@ -33,8 +33,8 @@ try:
     alt_str  = sys.argv[3]
     filename = sys.argv[4]
 except:
-    print __doc__
-    raise StandardError("Syntax error.")
+    print(__doc__)
+    sys.exit()
 
 lon_ref = lon_str[-1]
 lon_val = float(lon_str[:-1])

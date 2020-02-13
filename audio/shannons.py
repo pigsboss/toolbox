@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #coding=utf-8
 """Estimate information entropy in bits of specified audio file.
 
@@ -10,12 +10,12 @@ import sys
 from getopt import gnu_getopt
 from os import path
 
-def analyze_soundfile(filepath):
+def analyze_soundfile(filepath, bits=28):
     data, samplerate = sf.read(filepath, always_2d=True)
     nframes, nchans = data.shape
     dmin = np.min(data[:,0])
     dmax = np.max(data[:,0])
-    x = np.int64((data[:,0]-dmin)/(dmax-dmin)*(2**32-1)+0.5)
+    x = np.int64((data[:,0]-dmin)/(dmax-dmin)*(2**bits-1)+0.5)
     cts = np.bincount(x)
     idx = np.nonzero(cts)
     pmf = cts[idx] / np.sum(cts)
@@ -44,13 +44,16 @@ def pprint(info_dict, display=True):
         ))
 
 if __name__ == '__main__':
-    opts, args = gnu_getopt(sys.argv[1:], 'hd')
+    opts, args = gnu_getopt(sys.argv[1:], 'hdb:')
     display = False
+    bits = 28
     for opt, val in opts:
         if opt == '-h':
             print(__doc__)
             sys.exit()
         elif opt == '-d':
             display = True
-    info = analyze_soundfile(path.abspath(path.normpath(path.realpath(args[0]))))
+        elif opt == '-b':
+            bits = int(val)
+    info = analyze_soundfile(path.abspath(path.normpath(path.realpath(args[0]))), bits=bits)
     pprint(info, display=display)
