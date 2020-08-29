@@ -13,15 +13,34 @@ fi
 CFGFILE=$SRC/.timecap
 if [ -f $CFGFILE ]; then
     source $CFGFILE
-    echo $MAXDEPTH
-    echo $SRCNAME
 else
     echo "TimeCap config file is missing."
-    echo "Please create a config file ($CFGFILE) first."
-    exit 1
+    echo "Use default configuration."
+    SRCNAME=$(basename $SRC)
+    MAXDEPTH=7
 fi
-LATEST=$(readlink -f $DEST/$SRCNAME-latest.tar)
-if [ -f $LATEST ]; then
-    echo "Find previous backup $LATEST"
-    
+echo "Name: $SRCNAME"
+echo "Maximum depth: $MAXDEPTH"
+SNAR=$(readlink -f $DEST/$SRCNAME.snar)
+if [ -f $SNAR ]; then
+    echo "Found snapshot file $SNAR of incremental backups."
+    LATEST=$(readlink -f $DEST/$SRCNAME-latest.tar)
+    LASTDEPTH=$(basename -s .tar $LATEST|grep -o -E '[0-9]+')
+    echo "Found previous backup $LATEST (depth: $LASTDEPTH)."
+else
+    LASTDEPTH=-1
+fi
+if [ $((LASTDEPTH+1)) -lt $MAXDEPTH ]; then
+    CURDEPTH=$((LASTDEPTH+1))
+    cd $SRC
+    tar -c -g $SNAR -f $DEST/$SRCNAME-$CURDEPTH.tar ./
+    ln -sf $DEST/$SRCNAME-$CURDEPTH.tar $DEST/$SRCNAME-latest.tar
+else
+    CURDEPTH=0
+    cd $SRC
+    tar -c -g $SNAR.new -f $DEST/$SRCNAME-$CURDEPTH.tar ./
+    mv $SNAR.new $SNAR
+    ln -sf $DEST/$SRCNAME-$CURDEPTH.tar $DEST/$SRCNAME-latest.tar
+fi
+echo "Created $CURDEPTH-depth backup $(readlink -f $DEST/$SRCNAME-latest.tar)."
 
