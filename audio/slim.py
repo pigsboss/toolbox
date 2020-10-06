@@ -69,7 +69,7 @@ from multiprocessing import cpu_count, Pool, Process, Queue
 from time import time, sleep
 from os import path
 from getopt import gnu_getopt
-from subprocess import run, Popen, PIPE, DEVNULL
+from subprocess import run, Popen, PIPE, DEVNULL, CalledProcessError
 from tempfile import TemporaryDirectory
 from mpi4py import MPI
 
@@ -560,11 +560,11 @@ def find_tracks(srcdir):
 """
     result = run([
         'find', path.abspath(srcdir), '-type', 'f',
-        '-name', '*.flac', '-or', '-name', '*.dsf'
+        '-iname', '*.flac', '-or', '-iname', '*.dsf'
     ], check=True, stdout=PIPE, stderr=DEVNULL)
     tracks = []
     for p in result.stdout.decode().splitlines():
-        if path.isfile(p):
+        if path.isfile(path.normpath(path.abspath(p))):
             tracks.append(path.normpath(path.abspath(p)))
     return tracks
 
@@ -860,9 +860,22 @@ class AudioTrack(object):
         return filepath
 
     def ExtractCoverArt(self, filepath):
-        run(['ffmpeg', '-y', '-i', self.source,
-             '-an', '-c:v', 'png', filepath
-        ], check=True, stdout=DEVNULL, stderr=DEVNULL)
+        try:
+            run(['ffmpeg', '-y', '-i', self.source,
+                 '-an', '-c:v', 'png', filepath
+                 ], check=True, stdout=DEVNULL, stderr=DEVNULL)
+        except CalledProcessError:
+            parentpath = path.dirname(self.source)
+            parentname = path.basename(parentpath)
+            coverartpath = path.join(parentpath, parentname)
+            success = False
+            for fmt in ['jpg', 'JPG', 'jpeg', 'JPEG', 'png', 'PNG']:
+                p = coverartpath + '.' + fmt
+                if path.isfile(p):
+                    run(['convert', p, filepath], check=True, stdout=DEVNULL, stderr=DEVNULL)
+                    success = True
+                    break
+            assert success
         return filepath
 
     def Print(self):
@@ -1242,7 +1255,13 @@ class Library(object):
                 writer.writeheader()
                 for t in self.tracks.values():
                     if artist_match in t.metadata['albumartist'] and album_match in t.metadata['album'] and track_match in t.GenFilename():
-                        writer.writerow(t.metadata)
+                        tt = {}
+                        for k in t.metadata:
+                            try:
+                                tt[k] = '<br \>'.join(t.metadata[k].splitlines())
+                            except AttributeError:
+                                tt[k] = t.metadata[k]
+                        writer.writerow(tt)
         except IOError:
             ## print to stdout
             for a in self.albums.values():
