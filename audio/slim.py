@@ -729,7 +729,7 @@ class AudioTrack(object):
                         '-f', 'aiff', '-'
                     ], stdin=flac_dec.stdout, stdout=PIPE, stderr=DEVNULL)
                     flac_enc = Popen([
-                        'flac', '-', '-f',
+                        'flac', '-', '-f', '--lax',
                         '--picture', '3|image/png|Cover||{}'.format(path.join(path.split(filepath)[0], 'cover.png')),
                         '--ignore-chunk-sizes', '--force-aiff-format',
                         *gen_flac_tagopts(self.metadata),
@@ -991,7 +991,10 @@ class Library(object):
         i = 0
         while i < ntrks:
             tobj = q_obj.get()
-            self.tracks[tobj.id] = tobj
+            if tobj.id in self.tracks:
+                print('Duplicate track found: {}'.format(tobj.source))
+            else:
+                self.tracks[tobj.id] = tobj
             i += 1
             sys.stdout.write(u'\rImporting audio tracks......{:d}/{:d} ({:5.1f}%)'.format(i, ntrks, 100.0*i/ntrks))
             sys.stdout.flush()
