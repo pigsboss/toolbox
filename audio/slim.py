@@ -972,7 +972,7 @@ class Library(object):
         self.checksum_path = path.join(outdir, '{}.txt'.format(DEFAULT_CHECKSUM_PROG))
         self.ImportTracks(tracks, checksum=False)
         self.UpdateAlbums()
-        self.ExtractCoverArts()
+        ## self.ExtractCoverArts()
         print(u'{:d} audio tracks of {:d} album(s) loaded.'.format(len(self.tracks), len(self.albums)))
         return
 
@@ -992,7 +992,7 @@ class Library(object):
         self.checksum_path = path.join(outdir, '{}.txt'.format(DEFAULT_CHECKSUM_PROG))
         self.ImportTracks(tracks)
         self.UpdateAlbums()
-        ## self.ExtractCoverArts()
+        self.ExtractCoverArts()
         print(u'{:d} audio tracks of {:d} album(s) loaded.'.format(len(self.tracks), len(self.albums)))
         return
 
