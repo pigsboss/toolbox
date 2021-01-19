@@ -11,6 +11,11 @@ Actions:
     Syntax: slim.py build -s SRC DEST
     SRC is path of SONY Music Library.
 
+  build
+    Build SONY Music Library, generate metadata and checksums and extract album cover arts.
+    Syntax: slim.py build -s SRC DEST
+    SRC is path of SONY Music Library.
+
   print
     print pre-built SONY Music Library from user specified database.
     Syntax: slim.py print PATH_TO_DB
