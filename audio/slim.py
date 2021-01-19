@@ -6,9 +6,9 @@ Usage: slim.py action [options]
 
 Actions:
 
-  build
-    Build SONY Music Library, generate metadata and checksums and extract album cover arts.
-    Syntax: slim.py build -s SRC DEST
+  scan
+    Scan SONY Music Library, generate metadata.
+    Syntax: slim.py scan -s SRC DEST
     SRC is path of SONY Music Library.
 
   build
@@ -600,7 +600,7 @@ def gen_flac_tagopts(tags):
     return opts
 
 class AudioTrack(object):
-    def __init__(self, filepath):
+    def __init__(self, filepath, checksum=True):
         ## examine path
         if not path.isfile(filepath):
             raise FileNotFoundError(u'Audio track file does not exist.'.format(filepath))
@@ -617,7 +617,8 @@ class AudioTrack(object):
         else:
             raise TypeError(u'Audio format {} is not supported.'.format(extname))
         self.UpdateMetadata()
-        self.UpdateFileChecksum()
+        if checksum:
+            self.UpdateFileChecksum()
         self.id        = hashlib.sha224('{}{}'.format(self.GenPath(), extname).encode('utf-8')).hexdigest()
         self.parent_id = hashlib.sha224(self.GenParentPath().encode('utf-8')).hexdigest()
 
@@ -931,10 +932,10 @@ class Album(list):
         self.cover_art_info = info
         return info
 
-def __import_worker__(q_in, q_out):
+def __import_worker__(q_in, q_out, checksum=True):
     pack_in = q_in.get()
     while pack_in is not None:
-        q_out.put(AudioTrack(pack_in))
+        q_out.put(AudioTrack(pack_in, checksum))
         pack_in = q_in.get()
 
 def __export_worker__(q_in, q_out):
@@ -955,6 +956,26 @@ def __extract_worker__(q_in, q_out):
 class Library(object):
     """SONY Music Library.
 """
+    def Scan(self, libroot, outdir):
+        """Scan SONY Music Library.
+"""
+        self.source = path.normpath(path.abspath(libroot))
+        if path.exists(outdir):
+            assert False, 'output directory already exists.'
+        os.makedirs(outdir)
+        ##
+        ## initialize containers.
+        tracks = find_tracks(self.source)
+        self.tracks = {}
+        self.albums = {}
+        self.arts_path = path.join(outdir, 'arts')
+        self.checksum_path = path.join(outdir, '{}.txt'.format(DEFAULT_CHECKSUM_PROG))
+        self.ImportTracks(tracks, checksum=False)
+        self.UpdateAlbums()
+        self.ExtractCoverArts()
+        print(u'{:d} audio tracks of {:d} album(s) loaded.'.format(len(self.tracks), len(self.albums)))
+        return
+
     def Build(self, libroot, outdir):
         """Build SONY Music Library from source directory.
 """
@@ -971,11 +992,11 @@ class Library(object):
         self.checksum_path = path.join(outdir, '{}.txt'.format(DEFAULT_CHECKSUM_PROG))
         self.ImportTracks(tracks)
         self.UpdateAlbums()
-        self.ExtractCoverArts()
+        ## self.ExtractCoverArts()
         print(u'{:d} audio tracks of {:d} album(s) loaded.'.format(len(self.tracks), len(self.albums)))
         return
 
-    def ImportTracks(self, tracks):
+    def ImportTracks(self, tracks, checksum=True):
         """Import SONY Music tracks.
 """
         tic = time()
@@ -986,7 +1007,7 @@ class Library(object):
         nworkers = max(2, cpu_count())
         ntrks = len(tracks)
         for i in range(nworkers):
-            proc = Process(target=__import_worker__, args=(q_file, q_obj))
+            proc = Process(target=__import_worker__, args=(q_file, q_obj, checksum))
             proc.start()
             workers.append(proc)
         sys.stdout.write(u'Importing audio tracks......')
@@ -1325,7 +1346,13 @@ def main():
             reverse = True
         else:
             assert False, 'unhandled option'
-    if action.lower() in ['build']:
+    if action.lower() in ['scan']:
+        if mpi_rank == 0:
+            outdir = path.normpath(path.abspath(args[0]))
+            l = Library()
+            l.Scan(srcdir, path.abspath(outdir))
+            save_library(l, path.join(outdir, 'main.db'))
+    elif action.lower() in ['build']:
         if mpi_rank == 0:
             outdir = path.normpath(path.abspath(args[0]))
             l = Library()
