@@ -1287,7 +1287,7 @@ class Library(object):
                         tt = {}
                         for k in t.metadata:
                             try:
-                                tt[k] = '<br \>'.join(t.metadata[k].splitlines())
+                                tt[k] = '<br />'.join(t.metadata[k].splitlines())
                             except AttributeError:
                                 tt[k] = t.metadata[k]
                         writer.writerow(tt)
