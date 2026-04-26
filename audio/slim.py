@@ -44,7 +44,7 @@ Options:
         cd     (up to   48kHz/24bit FLAC).
         itunes (256kbps 44.1kHz VBR AAC). 
         aac    (44.1kHz/48kHz VBR 5 AAC).
-        opus   (44.1kHz/48kHz 128bps Opus).
+        opus   (44.1kHz/48kHz 192bps Opus).
         radio  (128kbps 44.1kHz VBR MP3).
   -b  bitrate, in kbps (overrides preset default bitrate).
   -k  key for sorting. Default: width.
@@ -215,7 +215,7 @@ PRESETS = {
     },
     'opus': {
         'max_sample_rate'     :  48000,
-        'bitrate'             :    128, ## kbps
+        'bitrate'             :    192, ## kbps
         'format'              :  'OGG',
         'extension'           :  'opus',
         'art_format'          : 'jpeg',
