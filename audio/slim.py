@@ -659,7 +659,11 @@ class AudioTrack(object):
     def UpdateMetadata(self):
         if self.format == 'DSD':
             scheme = 'ID3'
-            metadata = DSF(self.source)
+            try:
+                metadata = DSF(self.source)
+            except Exception as e:
+                print(self.source)
+                raise e
         elif self.format == 'FLAC':
             scheme = 'Vorbis'
             metadata = FLAC(self.source)
