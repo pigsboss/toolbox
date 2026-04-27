@@ -234,6 +234,21 @@ PRESETS = {
 DEFAULT_CHECKSUM_PROG = 'sha224sum'
 SAFE_PATH_CHARS = ' _'
 
+_ffmpeg_encoders_cache = None
+
+def get_ffmpeg_encoders():
+    global _ffmpeg_encoders_cache
+    if _ffmpeg_encoders_cache is None:
+        try:
+            res = run(['ffmpeg', '-encoders'], stdout=PIPE, stderr=DEVNULL, check=True)
+            _ffmpeg_encoders_cache = res.stdout.decode()
+        except Exception:
+            _ffmpeg_encoders_cache = ''
+    return _ffmpeg_encoders_cache
+
+def check_ffmpeg_encoder(name):
+    return name in get_ffmpeg_encoders()
+
 def hostname():
     return run(['hostname','-f'], check=True, stdout=PIPE).stdout.decode().splitlines()[0]
 
@@ -797,23 +812,24 @@ class AudioTrack(object):
             ))
         elif preset.lower() in ['aac']:
             if bitrate is None:
-                bitrate = str(PRESETS[preset]['bitrate'])
-            qu = self.metadata['info']['sample_rate']//44100
-            br = self.metadata['info']['sample_rate']//qu
-            sr = br * min((PRESETS[preset]['max_sample_rate']//44100), qu)
+                bitrate = PRESETS[preset]['bitrate']  # keep int
+            qu = self.metadata['info']['sample_rate'] // 44100
+            br = self.metadata['info']['sample_rate'] // qu
+            sr = br * min((PRESETS[preset]['max_sample_rate'] // 44100), qu)
             if self.format == 'DSD':
                 gain = ',volume=+6dB'
             else:
                 gain = ''
+            # detect libfdk_aac encoder
+            if check_ffmpeg_encoder('libfdk_aac'):
+                enc_opts = ['-c:a', 'libfdk_aac', '-vbr', str(bitrate)]
+            else:
+                enc_opts = ['-c:a', 'aac', '-q:a', str(bitrate)]
             run([
                 'ffmpeg', '-y', '-i', self.source,
                 '-af', 'aresample=resampler=soxr:precision=24:dither_method=triangular:osr={:d}{}'.format(sr, gain),
-                '-vn', '-c:a', 'libfdk_aac', '-vbr', bitrate, filepath
+                '-vn', *enc_opts, filepath
             ], check=True, stdout=DEVNULL, stderr=DEVNULL)
-            add_cover_art(filepath, path.join(
-                path.split(filepath)[0],
-                'cover.{}'.format(PRESETS[preset]['art_format'])
-            ))
         elif preset.lower() in ['opus']:
             b = 48000 ## according to official opus codec RFC 6716 MDCT (modified discrete cosine transform)
                       ## layer of opus encoder always operates on 48kHz sampling rate.
