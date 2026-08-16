@@ -357,7 +357,7 @@ def download_tile(zoom, x, y):
     try:
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
-            img = Image.open(io.BytesIO(resp.content)).convert('RGB')
+            img = Image.open(io.BytesIO(resp.content)).convert('RGBA').convert('RGB')
             return img
     except Exception:
         pass
