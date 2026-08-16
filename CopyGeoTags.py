@@ -1,4 +1,4 @@
-#!/usr/bin/env pythonOA
+#!/usr/bin/env python3
 """Copy GeoTags from reference photos.
 
 Syntax:
@@ -118,7 +118,7 @@ elif path.isfile(sys.argv[1]):
     else:
         print('Missing datetime and/or GPS data in {}.'.format(f))
 if len(ts) == 0:
-    raise StandardError('No reference found.')
+    raise RuntimeError('No reference found.')
 elif len(ts) == 1:
     xfunc = lambda t:rs[0][0]
     yfunc = lambda t:rs[0][1]
