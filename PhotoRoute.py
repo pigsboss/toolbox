@@ -975,17 +975,18 @@ def main():
                 geo1 = geo_cache.get(i)
                 geo2 = geo_cache.get(i + 1)
 
-                near1 = bool(
-                    geo1
-                    and geo1.get('road_distance') is not None
-                    and geo1['road_distance'] <= args.road_radius
-                )
-                near2 = bool(
-                    geo2
-                    and geo2.get('road_distance') is not None
-                    and geo2['road_distance'] <= args.road_radius
-                )
-                use_route = near1 and near2
+                road_dist1 = geo1.get('road_distance') if geo1 else None
+                road_dist2 = geo2.get('road_distance') if geo2 else None
+
+                if road_dist1 is None or road_dist2 is None:
+                    # 缺少道路距离信息时，保守回退为直接插值
+                    use_route = False
+                else:
+                    d = haversine_distance(
+                        p1['lat'], p1['lon'],
+                        p2['lat'], p2['lon']
+                    )
+                    use_route = not (d < min(road_dist1, road_dist2))
 
         if use_route:
             route_result = amap_route_between(

@@ -59,6 +59,14 @@ HTML_TEMPLATE = """
         <label>分辨率(米/像素): <input type="number" name="resolution" value="50" min="1"></label>
         <label>边距(像素): <input type="number" name="margin" value="50" min="0"></label>
         <label>缩略图尺寸(像素): <input type="number" name="thumb_size" value="100" min="20"></label>
+        <label>轨迹策略:
+            <select name="strategy">
+                <option value="auto" selected>自动</option>
+                <option value="route">强制路径规划</option>
+                <option value="interp">强制直接插值</option>
+            </select>
+        </label>
+        <label>插值步长(米): <input type="number" name="step_meters" value="50" min="1"></label>
         <button type="submit">生成地图</button>
     </form>
     <div id="controls">
@@ -196,6 +204,8 @@ def generate():
         resolution = float(request.form.get('resolution', 50))
         margin = int(request.form.get('margin', 50))
         thumb_size = int(request.form.get('thumb_size', 100))
+        strategy = request.form.get('strategy', 'auto')
+        step_meters = float(request.form.get('step_meters', 50))
 
         if not os.path.isdir(photo_dir):
             return jsonify({'error': f'目录不存在: {photo_dir}'}), 400
@@ -219,14 +229,65 @@ def generate():
 
         photo_infos.sort(key=lambda d: d['timestamp'])
 
-        # 简化：使用直接插值生成轨迹；如需道路规划，可参照 PhotoRoute.py 的 main()
+        # 获取每张照片的逆地理编码信息（供 auto 策略使用）
+        geo_cache = {}
+        if api_key and strategy in ('auto', 'route'):
+            for idx, info in enumerate(photo_infos):
+                geo_cache[idx] = pr.reverse_geocode(
+                    info['lat'], info['lon'], api_key
+                )
+
+        # 生成轨迹
         all_points = []
         for i in range(len(photo_infos) - 1):
             p1 = photo_infos[i]
-            p2 = photo_infos[i+1]
-            all_points.extend(pr.direct_interpolate(
-                p1['lat'], p1['lon'], p2['lat'], p2['lon'], step_meters=50
-            ))
+            p2 = photo_infos[i + 1]
+
+            use_route = False
+            if api_key and strategy in ('auto', 'route'):
+                if strategy == 'route':
+                    use_route = True
+                else:
+                    geo1 = geo_cache.get(i)
+                    geo2 = geo_cache.get(i + 1)
+
+                    road_dist1 = geo1.get('road_distance') if geo1 else None
+                    road_dist2 = geo2.get('road_distance') if geo2 else None
+
+                    if road_dist1 is None or road_dist2 is None:
+                        use_route = False
+                    else:
+                        d = pr.haversine_distance(
+                            p1['lat'], p1['lon'],
+                            p2['lat'], p2['lon']
+                        )
+                        use_route = not (d < min(road_dist1, road_dist2))
+
+            if use_route:
+                route_result = pr.amap_route_between(
+                    p1['lat'], p1['lon'],
+                    p2['lat'], p2['lon'],
+                    api_key
+                )
+
+                if route_result:
+                    all_points.extend(route_result['points'])
+                else:
+                    all_points.extend(
+                        pr.direct_interpolate(
+                            p1['lat'], p1['lon'],
+                            p2['lat'], p2['lon'],
+                            step_meters=step_meters
+                        )
+                    )
+            else:
+                all_points.extend(
+                    pr.direct_interpolate(
+                        p1['lat'], p1['lon'],
+                        p2['lat'], p2['lon'],
+                        step_meters=step_meters
+                    )
+                )
 
         if not all_points:
             return jsonify({'error': '轨迹生成失败'}), 400
