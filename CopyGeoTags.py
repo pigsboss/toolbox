@@ -99,6 +99,7 @@ if path.isdir(sys.argv[1]):
                 d = piexif.load(f)
             except:
                 print('{} is not supported.'.format(f))
+                continue
             t = exiftag2timestamp(d['Exif'])
             r = geotag2xyzt(d['GPS'])
             if r is not None:
@@ -174,7 +175,7 @@ for f in targets:
     lattuple = (float2rational(dd),float2rational(mm),float2rational(ss))
     alttuple = float2rational(alt)
     dt = datetime.fromtimestamp(utc)
-    timetuple = ((dt.hour,1),(dt.minute,1),(dt.second*1000+dt.microsecond/1000,1000))
+    timetuple = ((dt.hour,1),(dt.minute,1),(dt.second*1000 + dt.microsecond//1000,1000))
     datestr   = datetime(dt.year,dt.month,dt.day).strftime(r'%Y:%m:%d')
     gps_ifd = {
         piexif.GPSIFD.GPSVersionID: (2,0,0,0),
