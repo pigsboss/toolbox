@@ -24,6 +24,10 @@ import argparse
 import io
 from datetime import datetime
 
+import hashlib
+import json
+import pathlib
+
 import piexif
 import requests
 from PIL import Image, ImageDraw, ImageOps
@@ -69,6 +73,54 @@ class RateLimiter:
 
 # 高德 Web 服务并发限制：每秒最多 3 次
 AMAP_RATE_LIMITER = RateLimiter(3)
+
+# ----------------------------------------------------------------------
+# 缓存目录与函数
+# ----------------------------------------------------------------------
+CACHE_DIR = pathlib.Path.home() / ".cache" / "photoroute"
+CACHE_DIR_API = CACHE_DIR / "api"
+CACHE_DIR_TILES = CACHE_DIR / "tiles"
+
+def ensure_cache_dirs():
+    CACHE_DIR_API.mkdir(parents=True, exist_ok=True)
+    CACHE_DIR_TILES.mkdir(parents=True, exist_ok=True)
+
+def cache_key(*args):
+    s = json.dumps(args, sort_keys=True, default=str).encode('utf-8')
+    return hashlib.sha1(s).hexdigest()
+
+def cache_get_json(key):
+    ensure_cache_dirs()
+    path = CACHE_DIR_API / f"{key}.json"
+    if path.exists():
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+def cache_set_json(key, data):
+    ensure_cache_dirs()
+    path = CACHE_DIR_API / f"{key}.json"
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+
+def cache_get_tile(zoom, x, y):
+    ensure_cache_dirs()
+    path = CACHE_DIR_TILES / str(zoom) / str(x) / f"{y}.png"
+    if path.exists():
+        try:
+            return Image.open(path).convert('RGB')
+        except Exception:
+            pass
+    return None
+
+def cache_set_tile(zoom, x, y, image):
+    ensure_cache_dirs()
+    path = CACHE_DIR_TILES / str(zoom) / str(x) / f"{y}.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
 
 # ----------------------------------------------------------------------
 # 时间与 GPS 提取
@@ -171,6 +223,11 @@ def reverse_geocode(lat, lon, api_key):
     if not api_key:
         return None
 
+    cache_key_value = cache_key('regeo', lat, lon, api_key)
+    cached = cache_get_json(cache_key_value)
+    if cached is not None:
+        return cached
+
     AMAP_RATE_LIMITER.wait()
 
     params = {
@@ -199,13 +256,16 @@ def reverse_geocode(lat, lon, api_key):
             except (TypeError, ValueError):
                 road_distance = None
 
-        return {
+        result = {
             'formatted_address': regeo.get('formatted_address'),
             'road_name': road_name,
             'road_distance': road_distance,
         }
+        cache_set_json(cache_key_value, result)
+        return result
     except Exception:
-        return None
+        pass
+    return None
 
 
 def is_near_road(lat, lon, api_key, radius_m=DEFAULT_ROAD_RADIUS):
@@ -229,6 +289,11 @@ def amap_route_between(lat1, lon1, lat2, lon2, api_key):
     """
     if not api_key:
         return None
+
+    cache_key_value = cache_key('route', lat1, lon1, lat2, lon2, api_key)
+    cached = cache_get_json(cache_key_value)
+    if cached is not None:
+        return cached
 
     AMAP_RATE_LIMITER.wait()
 
@@ -257,11 +322,13 @@ def amap_route_between(lat1, lon1, lat2, lon2, api_key):
             if points:
                 distance = float(path.get('distance', 0.0))
                 duration = float(path.get('duration', 0.0))
-                return {
+                result = {
                     'points': points,
                     'distance': distance,
                     'duration': duration,
                 }
+                cache_set_json(cache_key_value, result)
+                return result
     except Exception:
         pass
 
@@ -445,6 +512,11 @@ def compute_zoom_and_bounds(points, margin, target_resolution):
 
 def download_tile(zoom, x, y):
     """下载高德地图瓦片，返回 PIL Image；失败返回空白灰色瓦片。"""
+    # 先检查瓦片缓存
+    cached_tile = cache_get_tile(zoom, x, y)
+    if cached_tile is not None:
+        return cached_tile
+
     domain = random.choice(AMAP_TILE_DOMAINS)
     url = AMAP_TILE_URL.format(domain=domain) + \
           f'?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={zoom}'
@@ -452,6 +524,7 @@ def download_tile(zoom, x, y):
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             img = Image.open(io.BytesIO(resp.content)).convert('RGBA').convert('RGB')
+            cache_set_tile(zoom, x, y, img)
             return img
     except Exception:
         pass
