@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env pythonOA
 """Copy GeoTags from reference photos.
 
 Syntax:
@@ -48,7 +48,6 @@ def geotag2xyzt(geotag):
         lontuple    = geotag[0x0004]
         altref      = geotag[0x0005]
         alttuple    = geotag[0x0006]
-        HH,MM,SS    = geotag[0x0007]
         lat = np.deg2rad(
             lattuple[0][0]/   1.0/lattuple[0][1]+
             lattuple[1][0]/  60.0/lattuple[1][1]+
@@ -69,17 +68,26 @@ def geotag2xyzt(geotag):
         x = np.cos(lon)*np.cos(lat)*(R+alt)
         y = np.sin(lon)*np.cos(lat)*(R+alt)
         z = np.sin(lat)*(R+alt)
+    except KeyError:
+        return None
+    try:
+        HH,MM,SS    = geotag[0x0007]
         t = HH[0]*3600.0/HH[1] + MM[0]*60.0/MM[1] + SS[0]*1.0/SS[1] + (
             datetime.strptime(geotag[0x001d],r'%Y:%m:%d')-datetime(1970,1,1,0,0,0)
         ).total_seconds()
-        return x,y,z,t
     except KeyError:
-        return None
+        return x,y,z,None
+    return x,y,z,t
 
 try:
     method = sys.argv[3]
 except IndexError:
     method = 'nearest'
+
+try:
+    timezone = sys.argv[4]
+except IndexError:
+    timezone = 8.0
 
 ts = []
 rs = []
@@ -87,7 +95,10 @@ if path.isdir(sys.argv[1]):
     for f in os.listdir(sys.argv[1]):
         if path.splitext(f)[1].lower() in SupportedFileExt:
             f = path.join(sys.argv[1],f)
-            d = piexif.load(f)
+            try:
+                d = piexif.load(f)
+            except:
+                print('{} is not supported.'.format(f))
             t = exiftag2timestamp(d['Exif'])
             r = geotag2xyzt(d['GPS'])
             if r is not None:
@@ -111,13 +122,19 @@ elif len(ts) == 1:
     xfunc = lambda t:rs[0][0]
     yfunc = lambda t:rs[0][1]
     zfunc = lambda t:rs[0][2]
-    tfunc = lambda t:t-(ts[0]-rs[0][3])
+    if rs[0][3] is not None:
+        tfunc = lambda t:t-(ts[0]-rs[0][3])
+    else:
+        tfunc = lambda t:t-timezone*3600.0
 else:
     xfunc = interp1d(np.double(ts), np.double(rs)[:,0], kind=method, bounds_error=False, fill_value='extrapolate')
     yfunc = interp1d(np.double(ts), np.double(rs)[:,1], kind=method, bounds_error=False, fill_value='extrapolate')
     zfunc = interp1d(np.double(ts), np.double(rs)[:,2], kind=method, bounds_error=False, fill_value='extrapolate')
-    ofunc = interp1d(np.double(ts), np.double(ts)-np.double(rs)[:,3], kind='nearest', bounds_error=False, fill_value='extrapolate')
-    tfunc = lambda t:t-ofunc(t)
+    if np.any(np.isnan(np.double(rs)[:,3])):
+        tfunc = lambda t:t-timezone*3600.0
+    else:
+        ofunc = interp1d(np.double(ts), np.double(ts)-np.double(rs)[:,3], kind='nearest', bounds_error=False, fill_value='extrapolate')
+        tfunc = lambda t:t-ofunc(t)
 targets = []
 if path.isdir(sys.argv[2]):
     for f in os.listdir(sys.argv[2]):
