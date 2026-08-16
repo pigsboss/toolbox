@@ -17,6 +17,7 @@ import os
 import sys
 import math
 import random
+import time
 import argparse
 import io
 from datetime import datetime
@@ -48,6 +49,23 @@ DEFAULT_MAP_SIZE    = (1400, 900)
 DEFAULT_THUMB_SIZE  = 100
 DEFAULT_MARGIN      = 50
 
+class RateLimiter:
+    """限制高德 Web API 每秒最大请求数。"""
+
+    def __init__(self, max_per_second):
+        self.interval = 1.0 / max_per_second
+        self.last_call = 0.0
+
+    def wait(self):
+        now = time.time()
+        elapsed = now - self.last_call
+        if elapsed < self.interval:
+            time.sleep(self.interval - elapsed)
+        self.last_call = time.time()
+
+
+# 高德 Web 服务并发限制：每秒最多 3 次
+AMAP_RATE_LIMITER = RateLimiter(3)
 
 # ----------------------------------------------------------------------
 # 时间与 GPS 提取
@@ -145,10 +163,12 @@ def get_photo_info(filepath):
 # 高德 API 调用
 # ----------------------------------------------------------------------
 
-def is_near_road(lat, lon, api_key, radius_m=DEFAULT_ROAD_RADIUS):
-    """利用高德逆地理 API 判断点是否靠近道路。"""
+def reverse_geocode(lat, lon, api_key):
+    """获取逆地理编码信息，失败返回 None。"""
     if not api_key:
-        return False
+        return None
+
+    AMAP_RATE_LIMITER.wait()
 
     params = {
         'key': api_key,
@@ -157,27 +177,57 @@ def is_near_road(lat, lon, api_key, radius_m=DEFAULT_ROAD_RADIUS):
         'radius': 500,
         'roadlevel': 0,
     }
+
     try:
         resp = requests.get(AMAP_REQEO_URL, params=params, timeout=10)
         data = resp.json()
-        if data.get('status') == '1':
-            regeo = data.get('regeocode', {})
-            roads = regeo.get('roads', [])
-            if roads:
-                distance = float(roads[0].get('distance', 9999))
-                return distance <= radius_m
+        if data.get('status') != '1':
+            return None
+
+        regeo = data.get('regeocode', {})
+        roads = regeo.get('roads', [])
+
+        road_name = None
+        road_distance = None
+        if roads:
+            road_name = roads[0].get('name')
+            try:
+                road_distance = float(roads[0].get('distance'))
+            except (TypeError, ValueError):
+                road_distance = None
+
+        return {
+            'formatted_address': regeo.get('formatted_address'),
+            'road_name': road_name,
+            'road_distance': road_distance,
+        }
     except Exception:
-        pass
-    return False
+        return None
+
+
+def is_near_road(lat, lon, api_key, radius_m=DEFAULT_ROAD_RADIUS):
+    """判断坐标是否靠近道路。"""
+    geo = reverse_geocode(lat, lon, api_key)
+    if not geo:
+        return False
+    return geo.get('road_distance') is not None and geo['road_distance'] <= radius_m
 
 
 def amap_route_between(lat1, lon1, lat2, lon2, api_key):
-    """
-    调用高德驾车路径规划，返回途经点列表 [(lat, lon), ...]。
-    若失败返回 None（由调用者回退到插值）。
+    """调用高德驾车路径规划。
+
+    成功返回字典：
+        {
+            'points': [(lat, lon), ...],
+            'distance': 米,
+            'duration': 秒,
+        }
+    失败返回 None。
     """
     if not api_key:
         return None
+
+    AMAP_RATE_LIMITER.wait()
 
     params = {
         'key': api_key,
@@ -187,6 +237,7 @@ def amap_route_between(lat1, lon1, lat2, lon2, api_key):
         'strategy': 0,
         'show_fields': 'polyline',
     }
+
     try:
         resp = requests.get(AMAP_DRIVING_URL, params=params, timeout=15)
         data = resp.json()
@@ -199,10 +250,18 @@ def amap_route_between(lat1, lon1, lat2, lon2, api_key):
                     for pair in polyline.split(';'):
                         lon, lat = map(float, pair.split(','))
                         points.append((lat, lon))
+
             if points:
-                return points
+                distance = float(path.get('distance', 0.0))
+                duration = float(path.get('duration', 0.0))
+                return {
+                    'points': points,
+                    'distance': distance,
+                    'duration': duration,
+                }
     except Exception:
         pass
+
     return None
 
 
@@ -452,12 +511,39 @@ def main():
     # 按时间排序
     photo_infos.sort(key=lambda d: d['timestamp'])
 
+    # 获取每张照片的逆地理编码信息
+    geo_cache = {}
+    if args.api_key:
+        print('正在获取每张照片的地理位置信息...')
+        for idx, info in enumerate(photo_infos, 1):
+            geo = reverse_geocode(info['lat'], info['lon'], args.api_key)
+            geo_cache[idx - 1] = geo
+
+            basename = os.path.basename(info['path'])
+            address = '未知地址'
+            road_desc = '未匹配到道路'
+
+            if geo:
+                if geo.get('formatted_address'):
+                    address = geo['formatted_address']
+
+                if geo.get('road_name'):
+                    road_name = geo['road_name']
+                    if geo.get('road_distance') is not None:
+                        road_desc = f'{road_name}（{geo["road_distance"]:.0f} 米）'
+                    else:
+                        road_desc = road_name
+
+            print(f'  [{idx}/{len(photo_infos)}] {basename}: {address}；最近道路: {road_desc}')
+
     # 生成轨迹
     print('正在生成相邻照片间的轨迹...')
     all_points = []
     for i in range(len(photo_infos) - 1):
         p1 = photo_infos[i]
         p2 = photo_infos[i + 1]
+        basename1 = os.path.basename(p1['path'])
+        basename2 = os.path.basename(p2['path'])
 
         # 决定是否使用高德路径规划
         use_route = False
@@ -465,19 +551,56 @@ def main():
             if args.strategy == 'route':
                 use_route = True
             else:
-                near1 = is_near_road(p1['lat'], p1['lon'], args.api_key, args.road_radius)
-                near2 = is_near_road(p2['lat'], p2['lon'], args.api_key, args.road_radius)
+                geo1 = geo_cache.get(i)
+                geo2 = geo_cache.get(i + 1)
+
+                near1 = bool(
+                    geo1
+                    and geo1.get('road_distance') is not None
+                    and geo1['road_distance'] <= args.road_radius
+                )
+                near2 = bool(
+                    geo2
+                    and geo2.get('road_distance') is not None
+                    and geo2['road_distance'] <= args.road_radius
+                )
                 use_route = near1 and near2
 
         if use_route:
-            route_points = amap_route_between(p1['lat'], p1['lon'], p2['lat'], p2['lon'], args.api_key)
-            if route_points:
+            route_result = amap_route_between(
+                p1['lat'], p1['lon'], p2['lat'], p2['lon'], args.api_key
+            )
+
+            if route_result:
+                route_points = route_result['points']
                 all_points.extend(route_points)
+
+                distance_km = route_result['distance'] / 1000.0
+                duration_min = route_result['duration'] / 60.0
+
+                print(
+                    f'  路径规划成功 [{i + 1}/{len(photo_infos) - 1}]: '
+                    f'{basename1} -> {basename2} | '
+                    f'{distance_km:.2f} km, {duration_min:.1f} min, '
+                    f'{len(route_points)} 个轨迹点 | '
+                    f'起终点均靠近道路'
+                )
             else:
-                print(f'路径规划失败，使用插值：{p1["path"]} -> {p2["path"]}')
-                all_points.extend(direct_interpolate(p1['lat'], p1['lon'], p2['lat'], p2['lon'], args.step_meters))
+                print(
+                    f'  路径规划失败 [{i + 1}/{len(photo_infos) - 1}]: '
+                    f'{basename1} -> {basename2} | 使用直线插值'
+                )
+                all_points.extend(
+                    direct_interpolate(
+                        p1['lat'], p1['lon'], p2['lat'], p2['lon'], args.step_meters
+                    )
+                )
         else:
-            all_points.extend(direct_interpolate(p1['lat'], p1['lon'], p2['lat'], p2['lon'], args.step_meters))
+            all_points.extend(
+                direct_interpolate(
+                    p1['lat'], p1['lon'], p2['lat'], p2['lon'], args.step_meters
+                )
+            )
 
     if not all_points:
         print('轨迹生成失败。')
