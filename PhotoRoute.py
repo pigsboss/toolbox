@@ -495,7 +495,8 @@ def main():
     all_geo_points = list(all_points)
     for info in photo_infos:
         all_geo_points.append((info['lat'], info['lon']))
-    zoom, bbox = compute_zoom_and_bounds(all_geo_points, size, args.margin)
+    zoom, minx, miny, maxx, maxy = compute_zoom_and_bounds(all_geo_points, size, args.margin)
+    bbox = (minx, miny, maxx, maxy)
 
     print(f'缩放级别：{zoom}，正在下载瓦片并绘制地图...')
     map_img = stitch_map(all_points, photo_infos, size, zoom, bbox, args.thumb_size)
