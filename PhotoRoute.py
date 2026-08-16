@@ -10,7 +10,9 @@ PhotoRoute.py - 照片轨迹地图生成器
     pip install piexif pillow requests
 
 用法示例：
-    python PhotoRoute.py /path/to/photos --output route_map.png
+    python PhotoRoute.py /path/to/photos --resolution 50 --output route_map.png
+    python PhotoRoute.py /path/to/photos --projection gnomonic --resolution 50 --output route_gnomonic.png
+    python PhotoRoute.py /path/to/photos --projection mollweide --resolution 50 --output route_mollweide.png
 """
 
 import os
@@ -48,6 +50,7 @@ DEFAULT_ROAD_RADIUS = 200      # 米
 DEFAULT_MAP_SIZE    = (1400, 900)
 DEFAULT_THUMB_SIZE  = 100
 DEFAULT_MARGIN      = 50
+EARTH_RADIUS_M      = 6371000.0
 
 class RateLimiter:
     """限制高德 Web API 每秒最大请求数。"""
@@ -312,40 +315,131 @@ def latlon_to_pixel(lat, lon, zoom):
     return x, y
 
 
-def compute_zoom_and_bounds(points, size, margin, zoom_range=(3, 18)):
-    """
-    自动计算最合适的缩放级别，使所有点 + margin 适应 size 画布。
-    返回 (zoom, minx, miny, maxx, maxy) 全局像素坐标。
-    """
+def latlon_to_gnomonic(lat, lon, lat0, lon0, radius=EARTH_RADIUS_M):
+    """经纬度 -> 以(lat0, lon0)为切点的球心切平面米制坐标。"""
+    lat = math.radians(lat)
+    lon = math.radians(lon)
+    lat0 = math.radians(lat0)
+    lon0 = math.radians(lon0)
+
+    cos_c = (
+        math.sin(lat0) * math.sin(lat)
+        + math.cos(lat0) * math.cos(lat) * math.cos(lon - lon0)
+    )
+    cos_c = max(-1.0, min(1.0, cos_c))
+
+    if cos_c <= 1e-12:
+        return float('inf'), float('inf')
+
+    x = radius * math.cos(lat) * math.sin(lon - lon0) / cos_c
+    y = radius * (
+        math.cos(lat0) * math.sin(lat)
+        - math.sin(lat0) * math.cos(lat) * math.cos(lon - lon0)
+    ) / cos_c
+
+    return x, y
+
+
+def gnomonic_to_latlon(x, y, lat0, lon0, radius=EARTH_RADIUS_M):
+    """球心切平面米制坐标 -> 经纬度。"""
+    rho = math.sqrt(x * x + y * y)
+    c = math.atan2(rho, radius)
+
+    lat0 = math.radians(lat0)
+    lon0 = math.radians(lon0)
+
+    if rho < 1e-9:
+        return math.degrees(lat0), math.degrees(lon0)
+
+    sin_c = math.sin(c)
+    cos_c = math.cos(c)
+
+    lat = math.asin(
+        math.cos(c) * math.sin(lat0)
+        + y * sin_c * math.cos(lat0) / rho
+    )
+
+    lon = lon0 + math.atan2(
+        x * sin_c,
+        rho * math.cos(lat0) * cos_c - y * math.sin(lat0) * sin_c
+    )
+
+    return math.degrees(lat), math.degrees(lon)
+
+
+def latlon_to_mollweide(lat, lon, lon0, radius=EARTH_RADIUS_M):
+    """经纬度 -> Mollweide 投影坐标（单位：米）"""
+    lat = math.radians(lat)
+    lon = math.radians(lon)
+    lon0 = math.radians(lon0)
+
+    theta = lat
+    for _ in range(10):
+        theta = theta - (2 * theta + math.sin(2 * theta) - math.pi * math.sin(lat)) / \
+                        (2 + 2 * math.cos(2 * theta))
+
+    x = (2 * math.sqrt(2) / math.pi) * radius * (lon - lon0) * math.cos(theta)
+    y = math.sqrt(2) * radius * math.sin(theta)
+    return x, y
+
+
+def mollweide_to_latlon(x, y, lon0, radius=EARTH_RADIUS_M):
+    """Mollweide 投影坐标（单位：米） -> 经纬度"""
+    lon0 = math.radians(lon0)
+
+    ratio = y / (math.sqrt(2) * radius)
+    ratio = max(-1.0, min(1.0, ratio))
+    theta = math.asin(ratio)
+
+    lat = math.asin((2 * theta + math.sin(2 * theta)) / math.pi)
+
+    cos_theta = math.cos(theta)
+    if abs(cos_theta) < 1e-12:
+        lon = lon0
+    else:
+        lon = lon0 + (math.pi * x) / (2 * math.sqrt(2) * radius * cos_theta)
+
+    return math.degrees(lat), math.degrees(lon)
+
+
+def compute_zoom_for_resolution(lat_center, target_resolution):
+    """根据中心纬度和目标分辨率选择最接近的高德瓦片缩放等级。"""
+    equator_m_per_px = 156543.03392804097
+    cos_lat = math.cos(math.radians(lat_center))
+
+    best_zoom = 3
+    best_diff = float('inf')
+
+    for zoom in range(3, 19):
+        m_per_px = equator_m_per_px * cos_lat / (2 ** zoom)
+        diff = abs(m_per_px - target_resolution)
+        if diff < best_diff:
+            best_diff = diff
+            best_zoom = zoom
+
+    return best_zoom
+
+
+def compute_zoom_and_bounds(points, margin, target_resolution):
+    """根据墨卡托投影和目标分辨率选择缩放级别，返回像素范围。"""
     if not points:
-        return 3, 0, 0, 256 * (2**3), 256 * (2**3)
+        return 3, 0, 0, 256 * (2 ** 3), 256 * (2 ** 3)
 
-    max_zoom, min_zoom = zoom_range[1], zoom_range[0]
-    for zoom in range(max_zoom, min_zoom - 1, -1):
-        xs = []
-        ys = []
-        for lat, lon in points:
-            x, y = latlon_to_pixel(lat, lon, zoom)
-            xs.append(x)
-            ys.append(y)
-        minx = min(xs) - margin
-        maxx = max(xs) + margin
-        miny = min(ys) - margin
-        maxy = max(ys) + margin
-        if (maxx - minx) <= size[0] and (maxy - miny) <= size[1]:
-            return zoom, minx, miny, maxx, maxy
+    lat_center = sum(lat for lat, _ in points) / len(points)
+    zoom = compute_zoom_for_resolution(lat_center, target_resolution)
 
-    # 若最小缩放仍放不下，强制使用最小缩放并扩大画布计算范围
-    zoom = min_zoom
-    xs, ys = [], []
+    xs = []
+    ys = []
     for lat, lon in points:
         x, y = latlon_to_pixel(lat, lon, zoom)
         xs.append(x)
         ys.append(y)
-    minx = min(xs) - margin
-    maxx = max(xs) + margin
-    miny = min(ys) - margin
-    maxy = max(ys) + margin
+
+    minx = int(min(xs) - margin)
+    maxx = int(max(xs) + margin)
+    miny = int(min(ys) - margin)
+    maxy = int(max(ys) + margin)
+
     return zoom, minx, miny, maxx, maxy
 
 
@@ -365,17 +459,16 @@ def download_tile(zoom, x, y):
     return Image.new('RGB', (256, 256), (240, 240, 240))
 
 
-def stitch_map(points, photo_infos, size, zoom, bbox, thumb_size):
+def stitch_map(points, photo_infos, zoom, bbox, thumb_size):
     """
     拼接瓦片、裁剪、绘制轨迹和缩略图。
     points: 全部轨迹点 [(lat, lon), ...]
     photo_infos: 照片信息列表（已过滤有 GPS 的照片）
-    size: 输出图像 (width, height)
     zoom: 缩放级别
     bbox: (minx, miny, maxx, maxy) 全局像素坐标
     thumb_size: 缩略图尺寸（像素）
     """
-    minx, miny, maxx, maxy = bbox
+    minx, miny, maxx, maxy = [int(v) for v in bbox]
     world_size = 256 * (2 ** zoom)
 
     # 裁剪范围限定在世界内
@@ -403,29 +496,23 @@ def stitch_map(points, photo_infos, size, zoom, bbox, thumb_size):
             canvas.paste(tile_img, (paste_x, paste_y))
 
     # 裁剪到 bbox
-    crop_left = int(minx - tile_minx * 256)
-    crop_top = int(miny - tile_miny * 256)
-    crop_right = int(maxx - tile_minx * 256)
-    crop_bottom = int(maxy - tile_miny * 256)
+    crop_left = minx - tile_minx * 256
+    crop_top = miny - tile_miny * 256
+    crop_right = maxx - tile_minx * 256
+    crop_bottom = maxy - tile_miny * 256
     map_img = canvas.crop((crop_left, crop_top, crop_right, crop_bottom))
-    map_img = map_img.resize(size, Image.LANCZOS)
 
     draw = ImageDraw.Draw(map_img, 'RGBA')
 
-    # 计算缩放比例（全局像素 -> 输出图像坐标）
-    scale_x = size[0] / (maxx - minx)
-    scale_y = size[1] / (maxy - miny)
-
+    # 输出像素与全局像素一一对应，不进行拉伸
     def to_img_coords(lat, lon):
         px, py = latlon_to_pixel(lat, lon, zoom)
-        ix = (px - minx) * scale_x
-        iy = (py - miny) * scale_y
-        return ix, iy
+        return px - minx, py - miny
 
     # 绘制轨迹
     if len(points) >= 2:
         line_points = [to_img_coords(lat, lon) for lat, lon in points]
-        line_points_int = [(int(x), int(y)) for x, y in line_points]
+        line_points_int = [(int(round(x)), int(round(y))) for x, y in line_points]
         # 阴影
         draw.line(line_points_int, fill=(0, 0, 0, 80), width=8, joint='curve')
         # 主线
@@ -434,13 +521,14 @@ def stitch_map(points, photo_infos, size, zoom, bbox, thumb_size):
     # 粘贴照片缩略图
     for info in photo_infos:
         ix, iy = to_img_coords(info['lat'], info['lon'])
+        ix, iy = int(round(ix)), int(round(iy))
         try:
             thumb = Image.open(info['path']).convert('RGB')
             thumb.thumbnail((thumb_size, thumb_size), Image.LANCZOS)
             # 白色边框
             border_size = 3
             bordered = ImageOps.expand(thumb, border=border_size, fill='white')
-            paste_position = (int(ix - bordered.width // 2), int(iy - bordered.height // 2))
+            paste_position = (ix - bordered.width // 2, iy - bordered.height // 2)
             map_img.paste(bordered, paste_position)
             # 画个小圆点标记
             draw.ellipse((ix - 4, iy - 4, ix + 4, iy + 4), fill=(255, 255, 0, 200), outline='black')
@@ -449,6 +537,270 @@ def stitch_map(points, photo_infos, size, zoom, bbox, thumb_size):
             draw.ellipse((ix - 5, iy - 5, ix + 5, iy + 5), fill=(255, 0, 0), outline='white')
 
     return map_img
+
+
+def crop_to_overlay_bbox(img, line_points, thumb_boxes, padding=10):
+    """根据轨迹线和缩略图叠加层生成掩码，计算内容边界框并裁剪。"""
+    mask = Image.new('L', img.size, 0)
+    mask_draw = ImageDraw.Draw(mask)
+
+    if len(line_points) >= 2:
+        line_points_int = [(int(round(x)), int(round(y))) for x, y in line_points]
+        mask_draw.line(line_points_int, fill=255, width=8, joint='curve')
+
+    for box in thumb_boxes:
+        left, top, right, bottom = box
+        mask_draw.rectangle(
+            (max(0, left-2), max(0, top-2), right+2, bottom+2),
+            fill=255
+        )
+
+    bbox = mask.getbbox()
+    if bbox is None:
+        return img
+
+    left = max(0, bbox[0] - padding)
+    top = max(0, bbox[1] - padding)
+    right = min(img.width, bbox[2] + padding)
+    bottom = min(img.height, bbox[3] + padding)
+
+    return img.crop((left, top, right, bottom))
+
+
+def stitch_map_gnomonic(points, photo_infos, resolution, margin, thumb_size, center):
+    """使用球心切平面投影生成地图，并裁剪到内容边界。"""
+    lat0, lon0 = center
+
+    xs = []
+    ys = []
+    for lat, lon in points:
+        try:
+            x, y = latlon_to_gnomonic(lat, lon, lat0, lon0)
+            xs.append(x)
+            ys.append(y)
+        except Exception:
+            pass
+
+    for info in photo_infos:
+        try:
+            x, y = latlon_to_gnomonic(info['lat'], info['lon'], lat0, lon0)
+            xs.append(x)
+            ys.append(y)
+        except Exception:
+            pass
+
+    if not xs:
+        raise RuntimeError('无法计算 gnomonic 投影范围')
+
+    margin_m = margin * resolution
+    minx = min(xs) - margin_m
+    maxx = max(xs) + margin_m
+    miny = min(ys) - margin_m
+    maxy = max(ys) + margin_m
+
+    width = max(1, int(math.ceil((maxx - minx) / resolution)))
+    height = max(1, int(math.ceil((maxy - miny) / resolution)))
+
+    zoom = compute_zoom_for_resolution(lat0, resolution)
+
+    output = Image.new('RGB', (width, height), (240, 240, 240))
+    draw = ImageDraw.Draw(output, 'RGBA')
+
+    line_pixels = []
+
+    if len(points) >= 2:
+        line_px = []
+        for lat, lon in points:
+            try:
+                x, y = latlon_to_gnomonic(lat, lon, lat0, lon0)
+                px = int(round((x - minx) / resolution))
+                py = int(round((maxy - y) / resolution))
+                line_px.append((px, py))
+                line_pixels.append((px, py))
+            except Exception:
+                pass
+        if len(line_px) >= 2:
+            draw.line(line_px, fill=(0, 0, 0, 80), width=8, joint='curve')
+            draw.line(line_px, fill=(255, 80, 80, 220), width=4, joint='curve')
+
+    # 逐像素采样墨卡托瓦片
+    tile_cache = {}
+
+    def sample_tile(lat, lon):
+        if lat > 85.05112878:
+            lat = 85.05112878
+        elif lat < -85.05112878:
+            lat = -85.05112878
+
+        px, py = latlon_to_pixel(lat, lon, zoom)
+        tx = int(math.floor(px / 256))
+        ty = int(math.floor(py / 256))
+
+        if (tx, ty) not in tile_cache:
+            tile_cache[(tx, ty)] = download_tile(zoom, tx, ty).convert('RGB')
+
+        tile = tile_cache[(tx, ty)]
+        local_x = int(px - tx * 256)
+        local_y = int(py - ty * 256)
+        local_x = max(0, min(255, local_x))
+        local_y = max(0, min(255, local_y))
+        return tile.getpixel((local_x, local_y))
+
+    for row in range(height):
+        y_m = maxy - (row + 0.5) * resolution
+        for col in range(width):
+            x_m = minx + (col + 0.5) * resolution
+            try:
+                lat, lon = gnomonic_to_latlon(x_m, y_m, lat0, lon0)
+                color = sample_tile(lat, lon)
+                output.putpixel((col, row), color)
+            except Exception:
+                pass
+
+    thumb_boxes = []
+
+    for info in photo_infos:
+        try:
+            x_m, y_m = latlon_to_gnomonic(info['lat'], info['lon'], lat0, lon0)
+            px = int(round((x_m - minx) / resolution))
+            py = int(round((maxy - y_m) / resolution))
+
+            thumb = Image.open(info['path']).convert('RGB')
+            thumb.thumbnail((thumb_size, thumb_size), Image.LANCZOS)
+            border_size = 3
+            bordered = ImageOps.expand(thumb, border=border_size, fill='white')
+            paste_position = (px - bordered.width // 2, py - bordered.height // 2)
+            output.paste(bordered, paste_position)
+            draw.ellipse((px - 4, py - 4, px + 4, py + 4),
+                         fill=(255, 255, 0, 200), outline='black')
+
+            thumb_boxes.append((
+                paste_position[0],
+                paste_position[1],
+                paste_position[0] + bordered.width,
+                paste_position[1] + bordered.height,
+            ))
+        except Exception:
+            pass
+
+    return crop_to_overlay_bbox(output, line_pixels, thumb_boxes, padding=10)
+
+
+def stitch_map_mollweide(points, photo_infos, resolution, margin, thumb_size, lon0):
+    """使用 Mollweide 投影生成地图，并裁剪到内容边界。"""
+    xs = []
+    ys = []
+    for lat, lon in points:
+        try:
+            x, y = latlon_to_mollweide(lat, lon, lon0)
+            xs.append(x)
+            ys.append(y)
+        except Exception:
+            pass
+
+    for info in photo_infos:
+        try:
+            x, y = latlon_to_mollweide(info['lat'], info['lon'], lon0)
+            xs.append(x)
+            ys.append(y)
+        except Exception:
+            pass
+
+    if not xs:
+        raise RuntimeError('无法计算 Mollweide 投影范围')
+
+    margin_m = margin * resolution
+    minx = min(xs) - margin_m
+    maxx = max(xs) + margin_m
+    miny = min(ys) - margin_m
+    maxy = max(ys) + margin_m
+
+    width = max(1, int(math.ceil((maxx - minx) / resolution)))
+    height = max(1, int(math.ceil((maxy - miny) / resolution)))
+
+    lat_center = sum(lat for lat, _ in points) / len(points) if points else 0.0
+    zoom = compute_zoom_for_resolution(lat_center, resolution)
+
+    output = Image.new('RGB', (width, height), (240, 240, 240))
+    draw = ImageDraw.Draw(output, 'RGBA')
+
+    line_pixels = []
+
+    if len(points) >= 2:
+        line_px = []
+        for lat, lon in points:
+            try:
+                x, y = latlon_to_mollweide(lat, lon, lon0)
+                px = int(round((x - minx) / resolution))
+                py = int(round((maxy - y) / resolution))
+                line_px.append((px, py))
+                line_pixels.append((px, py))
+            except Exception:
+                pass
+        if len(line_px) >= 2:
+            draw.line(line_px, fill=(0, 0, 0, 80), width=8, joint='curve')
+            draw.line(line_px, fill=(255, 80, 80, 220), width=4, joint='curve')
+
+    tile_cache = {}
+
+    def sample_tile(lat, lon):
+        if lat > 85.05112878:
+            lat = 85.05112878
+        elif lat < -85.05112878:
+            lat = -85.05112878
+
+        px, py = latlon_to_pixel(lat, lon, zoom)
+        tx = int(math.floor(px / 256))
+        ty = int(math.floor(py / 256))
+
+        if (tx, ty) not in tile_cache:
+            tile_cache[(tx, ty)] = download_tile(zoom, tx, ty).convert('RGB')
+
+        tile = tile_cache[(tx, ty)]
+        local_x = int(px - tx * 256)
+        local_y = int(py - ty * 256)
+        local_x = max(0, min(255, local_x))
+        local_y = max(0, min(255, local_y))
+        return tile.getpixel((local_x, local_y))
+
+    for row in range(height):
+        y_m = maxy - (row + 0.5) * resolution
+        for col in range(width):
+            x_m = minx + (col + 0.5) * resolution
+            try:
+                lat, lon = mollweide_to_latlon(x_m, y_m, lon0)
+                color = sample_tile(lat, lon)
+                output.putpixel((col, row), color)
+            except Exception:
+                pass
+
+    thumb_boxes = []
+
+    for info in photo_infos:
+        try:
+            x_m, y_m = latlon_to_mollweide(info['lat'], info['lon'], lon0)
+            px = int(round((x_m - minx) / resolution))
+            py = int(round((maxy - y_m) / resolution))
+
+            thumb = Image.open(info['path']).convert('RGB')
+            thumb.thumbnail((thumb_size, thumb_size), Image.LANCZOS)
+            border_size = 3
+            bordered = ImageOps.expand(thumb, border=border_size, fill='white')
+            paste_position = (px - bordered.width // 2, py - bordered.height // 2)
+            output.paste(bordered, paste_position)
+            draw.ellipse((px - 4, py - 4, px + 4, py + 4),
+                         fill=(255, 255, 0, 200), outline='black')
+
+            thumb_boxes.append((
+                paste_position[0],
+                paste_position[1],
+                paste_position[0] + bordered.width,
+                paste_position[1] + bordered.height,
+            ))
+        except Exception:
+            pass
+
+    return crop_to_overlay_bbox(output, line_pixels, thumb_boxes, padding=10)
 
 
 # ----------------------------------------------------------------------
@@ -462,7 +814,11 @@ def main():
     parser.add_argument('--output', default='photo_route.png', help='输出图片文件')
     parser.add_argument('--road-radius', type=float, default=200.0,
                         help='判断靠近道路的半径（米），默认 200')
-    parser.add_argument('--size', default='1400x900', help='输出图片尺寸 WxH')
+    parser.add_argument('--projection', choices=['mercator', 'gnomonic', 'mollweide'],
+                        default='mercator',
+                        help='地图投影：mercator=墨卡托（默认），gnomonic=球心切平面，mollweide=摩尔维特等面积投影')
+    parser.add_argument('--resolution', type=float, default=50.0,
+                        help='每像素对应的地面距离（米），默认 50')
     parser.add_argument('--thumb-size', type=int, default=100, help='缩略图尺寸（像素）')
     parser.add_argument('--margin', type=int, default=50, help='地图边距（像素）')
     parser.add_argument('--step-meters', type=float, default=50.0,
@@ -470,14 +826,6 @@ def main():
     parser.add_argument('--strategy', choices=['auto', 'route', 'interp'], default='auto',
                         help='轨迹生成策略：auto=自动判断是否靠近道路；route=强制路径规划；interp=强制直线插值')
     args = parser.parse_args()
-
-    # 解析输出尺寸
-    try:
-        w_str, h_str = args.size.split('x')
-        size = (int(w_str), int(h_str))
-    except Exception:
-        print(f'无效的 --size 格式：{args.size}')
-        sys.exit(1)
 
     # 收集照片
     photo_dir = args.photo_dir
@@ -613,19 +961,57 @@ def main():
             dedup_points.append(pt)
     all_points = dedup_points
 
-    # 计算地图范围与缩放
-    print('正在计算地图范围与缩放级别...')
+    # 计算地图范围并绘制
+    print('正在计算地图范围与投影参数...')
     all_geo_points = list(all_points)
     for info in photo_infos:
         all_geo_points.append((info['lat'], info['lon']))
-    zoom, minx, miny, maxx, maxy = compute_zoom_and_bounds(all_geo_points, size, args.margin)
-    bbox = (minx, miny, maxx, maxy)
 
-    print(f'缩放级别：{zoom}，正在下载瓦片并绘制地图...')
-    map_img = stitch_map(all_points, photo_infos, size, zoom, bbox, args.thumb_size)
+    if args.projection == 'mercator':
+        zoom, minx, miny, maxx, maxy = compute_zoom_and_bounds(
+            all_geo_points, args.margin, args.resolution
+        )
+        bbox = (minx, miny, maxx, maxy)
+
+        print(f'投影：墨卡托；缩放级别：{zoom}；正在下载瓦片并绘制地图...')
+        map_img = stitch_map(all_points, photo_infos, zoom, bbox, args.thumb_size)
+
+    elif args.projection == 'gnomonic':
+        lat_center = sum(lat for lat, _ in all_geo_points) / len(all_geo_points)
+        lon_center = sum(lon for _, lon in all_geo_points) / len(all_geo_points)
+
+        print(
+            f'投影：球心切平面；中心：({lat_center:.6f}, {lon_center:.6f})；'
+            f'分辨率：{args.resolution} m/px；正在生成地图...'
+        )
+        map_img = stitch_map_gnomonic(
+            all_points,
+            photo_infos,
+            args.resolution,
+            args.margin,
+            args.thumb_size,
+            (lat_center, lon_center),
+        )
+
+    else:  # mollweide
+        lat_center = sum(lat for lat, _ in all_geo_points) / len(all_geo_points)
+        lon_center = sum(lon for _, lon in all_geo_points) / len(all_geo_points)
+
+        print(
+            f'投影：Mollweide；中心经度：{lon_center:.6f}；'
+            f'分辨率：{args.resolution} m/px；正在生成地图...'
+        )
+        map_img = stitch_map_mollweide(
+            all_points,
+            photo_infos,
+            args.resolution,
+            args.margin,
+            args.thumb_size,
+            lon_center,
+        )
 
     map_img.save(args.output)
-    print(f'地图已保存为：{args.output}')
+    print(f'地图已保存为：{args.output}，尺寸：{map_img.width}x{map_img.height}')
 
 
 if __name__ == '__main__':
