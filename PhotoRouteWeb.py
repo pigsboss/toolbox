@@ -243,51 +243,13 @@ def generate():
             p1 = photo_infos[i]
             p2 = photo_infos[i + 1]
 
-            use_route = False
-            if api_key and strategy in ('auto', 'route'):
-                if strategy == 'route':
-                    use_route = True
-                else:
-                    geo1 = geo_cache.get(i)
-                    geo2 = geo_cache.get(i + 1)
+            geo1 = geo_cache.get(i)
+            geo2 = geo_cache.get(i + 1)
 
-                    road_dist1 = geo1.get('road_distance') if geo1 else None
-                    road_dist2 = geo2.get('road_distance') if geo2 else None
-
-                    if road_dist1 is None or road_dist2 is None:
-                        use_route = False
-                    else:
-                        d = pr.haversine_distance(
-                            p1['lat'], p1['lon'],
-                            p2['lat'], p2['lon']
-                        )
-                        use_route = not (d < min(road_dist1, road_dist2))
-
-            if use_route:
-                route_result = pr.amap_route_between(
-                    p1['lat'], p1['lon'],
-                    p2['lat'], p2['lon'],
-                    api_key
-                )
-
-                if route_result:
-                    all_points.extend(route_result['points'])
-                else:
-                    all_points.extend(
-                        pr.direct_interpolate(
-                            p1['lat'], p1['lon'],
-                            p2['lat'], p2['lon'],
-                            step_meters=step_meters
-                        )
-                    )
-            else:
-                all_points.extend(
-                    pr.direct_interpolate(
-                        p1['lat'], p1['lon'],
-                        p2['lat'], p2['lon'],
-                        step_meters=step_meters
-                    )
-                )
+            points, _ = pr.generate_segment_points(
+                p1, p2, api_key, step_meters, strategy, geo1, geo2
+            )
+            all_points.extend(points)
 
         if not all_points:
             return jsonify({'error': '轨迹生成失败'}), 400

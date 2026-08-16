@@ -223,7 +223,7 @@ def reverse_geocode(lat, lon, api_key):
     if not api_key:
         return None
 
-    cache_key_value = cache_key('regeo', lat, lon, api_key)
+    cache_key_value = cache_key('regeo_v2', lat, lon, api_key)
     cached = cache_get_json(cache_key_value)
     if cached is not None:
         return cached
@@ -256,10 +256,21 @@ def reverse_geocode(lat, lon, api_key):
             except (TypeError, ValueError):
                 road_distance = None
 
+        road_location = None
+        if roads:
+            loc = roads[0].get('location')
+            if loc:
+                try:
+                    lng, lat = (float(x) for x in loc.split(','))
+                    road_location = (lat, lng)
+                except Exception:
+                    road_location = None
+
         result = {
             'formatted_address': regeo.get('formatted_address'),
             'road_name': road_name,
             'road_distance': road_distance,
+            'road_location': road_location,
         }
         cache_set_json(cache_key_value, result)
         return result
@@ -367,6 +378,80 @@ def direct_interpolate(lat1, lon1, lat2, lon2, step_meters=50.0):
         lon = lon1 + (lon2 - lon1) * frac
         points.append((lat, lon))
     return points
+
+
+def dedupe_points(points, tol=1e-9):
+    """去掉连续重复点。"""
+    out = []
+    for pt in points:
+        if not out or abs(out[-1][0] - pt[0]) > tol or abs(out[-1][1] - pt[1]) > tol:
+            out.append(pt)
+    return out
+
+
+def generate_segment_points(p1, p2, api_key, step_meters=50.0,
+                            strategy='auto', geo1=None, geo2=None):
+    """生成相邻两张照片之间的轨迹点。
+
+    返回 (points, method)
+    method: 'direct', 'route', 'route_failed_direct'
+    """
+    A = (p1['lat'], p1['lon'])
+    D = (p2['lat'], p2['lon'])
+
+    if not api_key or strategy == 'interp':
+        return direct_interpolate(A[0], A[1], D[0], D[1], step_meters), 'direct'
+
+    if strategy == 'route':
+        route = amap_route_between(A[0], A[1], D[0], D[1], api_key)
+        if route:
+            return dedupe_points(route['points']), 'route'
+        return direct_interpolate(A[0], A[1], D[0], D[1], step_meters), 'route_failed_direct'
+
+    # auto
+    if geo1 is None:
+        geo1 = reverse_geocode(A[0], A[1], api_key)
+    if geo2 is None:
+        geo2 = reverse_geocode(D[0], D[1], api_key)
+
+    B = geo1.get('road_location') if geo1 else None
+    C = geo2.get('road_location') if geo2 else None
+
+    if B and C:
+        d_ad = haversine_distance(A[0], A[1], D[0], D[1])
+        d_ab = haversine_distance(A[0], A[1], B[0], B[1])
+        d_cd = haversine_distance(C[0], C[1], D[0], D[1])
+
+        if d_ab + d_cd > d_ad:
+            return direct_interpolate(A[0], A[1], D[0], D[1], step_meters), 'direct'
+
+        route = amap_route_between(B[0], B[1], C[0], C[1], api_key)
+        if route:
+            pts = []
+            if d_ab > 1.0:
+                pts.extend(direct_interpolate(A[0], A[1], B[0], B[1], step_meters))
+            pts.extend(route['points'])
+            if d_cd > 1.0:
+                pts.extend(direct_interpolate(C[0], C[1], D[0], D[1], step_meters))
+            return dedupe_points(pts), 'route'
+
+        return direct_interpolate(A[0], A[1], D[0], D[1], step_meters), 'route_failed_direct'
+
+    # 回退：缺少道路落点时，保留原来的距离判断
+    road1 = geo1.get('road_distance') if geo1 else None
+    road2 = geo2.get('road_distance') if geo2 else None
+
+    if road1 is None or road2 is None:
+        return direct_interpolate(A[0], A[1], D[0], D[1], step_meters), 'direct'
+
+    d = haversine_distance(A[0], A[1], D[0], D[1])
+    if d < min(road1, road2):
+        return direct_interpolate(A[0], A[1], D[0], D[1], step_meters), 'direct'
+
+    route = amap_route_between(A[0], A[1], D[0], D[1], api_key)
+    if route:
+        return dedupe_points(route['points']), 'route'
+    return direct_interpolate(A[0], A[1], D[0], D[1], step_meters), 'route_failed_direct'
 
 
 # ----------------------------------------------------------------------
@@ -966,62 +1051,23 @@ def main():
         basename1 = os.path.basename(p1['path'])
         basename2 = os.path.basename(p2['path'])
 
-        # 决定是否使用高德路径规划
-        use_route = False
-        if args.api_key and args.strategy in ('auto', 'route'):
-            if args.strategy == 'route':
-                use_route = True
-            else:
-                geo1 = geo_cache.get(i)
-                geo2 = geo_cache.get(i + 1)
+        geo1 = geo_cache.get(i)
+        geo2 = geo_cache.get(i + 1)
 
-                road_dist1 = geo1.get('road_distance') if geo1 else None
-                road_dist2 = geo2.get('road_distance') if geo2 else None
+        points, method = generate_segment_points(
+            p1, p2, args.api_key, args.step_meters, args.strategy, geo1, geo2
+        )
+        all_points.extend(points)
 
-                if road_dist1 is None or road_dist2 is None:
-                    # 缺少道路距离信息时，保守回退为直接插值
-                    use_route = False
-                else:
-                    d = haversine_distance(
-                        p1['lat'], p1['lon'],
-                        p2['lat'], p2['lon']
-                    )
-                    use_route = not (d < min(road_dist1, road_dist2))
-
-        if use_route:
-            route_result = amap_route_between(
-                p1['lat'], p1['lon'], p2['lat'], p2['lon'], args.api_key
+        if method == 'route':
+            print(
+                f'  路径规划成功 [{i + 1}/{len(photo_infos) - 1}]: '
+                f'{basename1} -> {basename2} | {len(points)} 个轨迹点'
             )
-
-            if route_result:
-                route_points = route_result['points']
-                all_points.extend(route_points)
-
-                distance_km = route_result['distance'] / 1000.0
-                duration_min = route_result['duration'] / 60.0
-
-                print(
-                    f'  路径规划成功 [{i + 1}/{len(photo_infos) - 1}]: '
-                    f'{basename1} -> {basename2} | '
-                    f'{distance_km:.2f} km, {duration_min:.1f} min, '
-                    f'{len(route_points)} 个轨迹点 | '
-                    f'起终点均靠近道路'
-                )
-            else:
-                print(
-                    f'  路径规划失败 [{i + 1}/{len(photo_infos) - 1}]: '
-                    f'{basename1} -> {basename2} | 使用直线插值'
-                )
-                all_points.extend(
-                    direct_interpolate(
-                        p1['lat'], p1['lon'], p2['lat'], p2['lon'], args.step_meters
-                    )
-                )
-        else:
-            all_points.extend(
-                direct_interpolate(
-                    p1['lat'], p1['lon'], p2['lat'], p2['lon'], args.step_meters
-                )
+        elif method == 'route_failed_direct':
+            print(
+                f'  路径规划失败 [{i + 1}/{len(photo_infos) - 1}]: '
+                f'{basename1} -> {basename2} | 使用插值'
             )
 
     if not all_points:
