@@ -61,9 +61,9 @@ HTML_TEMPLATE = """
         <label>缩略图尺寸(像素): <input type="number" name="thumb_size" value="100" min="20"></label>
         <label>轨迹策略:
             <select name="strategy">
-                <option value="auto" selected>自动</option>
-                <option value="route">强制路径规划</option>
-                <option value="interp">强制直接插值</option>
+                <option value="auto" selected>当前智能方案</option>
+                <option value="route">完全机动车路线规划</option>
+                <option value="interp">完全直线插值</option>
             </select>
         </label>
         <label>插值步长(米): <input type="number" name="step_meters" value="50" min="1"></label>

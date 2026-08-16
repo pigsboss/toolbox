@@ -982,7 +982,7 @@ def main():
     parser.add_argument('--step-meters', type=float, default=50.0,
                         help='直线插值采样间隔（米），默认 50')
     parser.add_argument('--strategy', choices=['auto', 'route', 'interp'], default='auto',
-                        help='轨迹生成策略：auto=自动判断是否靠近道路；route=强制路径规划；interp=强制直线插值')
+                        help='轨迹生成策略：auto=当前智能方案（默认）；route=完全机动车路线规划；interp=完全直线插值')
     args = parser.parse_args()
 
     # 收集照片
